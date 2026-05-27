@@ -1,0 +1,55 @@
+import { z } from 'zod';
+
+export const envSchema = z.object({
+  DATABASE_URL: z.string().url('DATABASE_URL must be a valid URL'),
+  ANTHROPIC_API_KEY: z.string().min(1, 'ANTHROPIC_API_KEY is required'),
+  OPENAI_API_KEY: z.string().min(1, 'OPENAI_API_KEY is required'),
+  GITHUB_APP_ID: z.string().min(1, 'GITHUB_APP_ID is required'),
+  GITHUB_PRIVATE_KEY: z
+    .string()
+    .min(1, 'GITHUB_PRIVATE_KEY is required (base64 encoded)'),
+  GITHUB_INSTALLATION_ID: z
+    .string()
+    .min(1, 'GITHUB_INSTALLATION_ID is required'),
+  PORT: z
+    .string()
+    .optional()
+    .default('4000')
+    .transform((v) => parseInt(v, 10))
+    .pipe(z.number().positive()),
+  NODE_ENV: z
+    .enum(['development', 'production', 'test'])
+    .optional()
+    .default('development'),
+  CORS_ORIGIN: z.string().optional().default('*'),
+  // Phase 2E — LangSmith tracing (optional)
+  LANGCHAIN_API_KEY: z.string().optional(),
+  LANGCHAIN_TRACING_V2: z.enum(['true', 'false']).optional().default('false'),
+  LANGCHAIN_PROJECT: z.string().optional().default('devflow'),
+  // Phase 2B — RunSupervisor config
+  SUPERVISOR_POLL_INTERVAL_MS: z
+    .string()
+    .optional()
+    .default('30000')
+    .transform((v) => parseInt(v, 10))
+    .pipe(z.number().positive()),
+  SUPERVISOR_STUCK_THRESHOLD_MS: z
+    .string()
+    .optional()
+    .default('300000')
+    .transform((v) => parseInt(v, 10))
+    .pipe(z.number().positive()),
+});
+
+export type EnvSchema = z.infer<typeof envSchema>;
+
+export function validateEnv(config: Record<string, unknown>): EnvSchema {
+  const result = envSchema.safeParse(config);
+  if (!result.success) {
+    const formatted = result.error.errors
+      .map((e) => `${e.path.join('.')}: ${e.message}`)
+      .join(', ');
+    throw new Error(`Environment validation failed: ${formatted}`);
+  }
+  return result.data;
+}

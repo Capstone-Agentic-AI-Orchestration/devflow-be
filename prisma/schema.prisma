@@ -1,0 +1,135 @@
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  extensions = [pgvector(map: "vector")]
+}
+
+model Project {
+  id          String        @id @default(cuid())
+  companyName String
+  brief       String        @db.Text
+  stackKey    String
+  status      ProjectStatus @default(PENDING)
+  runId       String?       @unique
+  repoUrl     String?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+  gates       GateEvent[]
+  artifacts   Artifact[]
+  eventLogs   EventLog[]
+  runBudget   RunBudget?
+}
+
+model GateEvent {
+  id        String       @id @default(cuid())
+  projectId String
+  project   Project      @relation(fields: [projectId], references: [id])
+  gateType  GateType
+  decision  GateDecision
+  notes     String?      @db.Text
+  decidedAt DateTime     @default(now())
+}
+
+model Artifact {
+  id        String   @id @default(cuid())
+  projectId String
+  project   Project  @relation(fields: [projectId], references: [id])
+  agentType String
+  filePath  String
+  content   String   @db.Text
+  createdAt DateTime @default(now())
+}
+
+enum ProjectStatus {
+  PENDING
+  PARSING_REQUIREMENTS
+  NEGOTIATING_CONTRACT
+  AWAITING_GATE_1
+  GENERATING_CODE
+  AWAITING_GATE_2
+  COMMITTING
+  DELIVERED
+  FAILED
+}
+
+enum GateType {
+  ARCHITECTURE_REVIEW
+  CODE_REVIEW
+}
+
+enum GateDecision {
+  APPROVED
+  REJECTED
+}
+
+// ─── Phase 2A: Agent Memory ────────────────────────────────────────────────────
+
+model AgentMemory {
+  id          String                      @id @default(cuid())
+  /// Which agent produced this memory: frontend | backend | database | architecture | contract
+  agentType   String
+  /// Partition key for similarity search scoping
+  memoryType  AgentMemoryType
+  /// The raw text that was embedded (artifact content or summary)
+  content     String                      @db.Text
+  /// 1536-dim vector from text-embedding-3-small
+  embedding   Unsupported("vector(1536)")
+  /// Flexible metadata: stackKey, projectType, complexity, contractId, etc.
+  metadata    Json                        @default("{}")
+  /// Source project — nullable so global patterns survive project deletion
+  projectId   String?
+  createdAt   DateTime                    @default(now())
+
+  @@index([agentType, memoryType])
+  @@index([projectId])
+  @@map("agent_memories")
+}
+
+enum AgentMemoryType {
+  SKILL      // successful agent prompt+output pairs that passed gate review
+  PATTERN    // fileManifest + contract that resulted in DELIVERED status
+  MISTAKE    // rejected artifacts with rejection notes
+}
+
+// ─── Phase 2B: Run Supervisor ──────────────────────────────────────────────────
+
+model EventLog {
+  id          String   @id @default(cuid())
+  projectId   String
+  project     Project  @relation(fields: [projectId], references: [id])
+  /// Node name as defined in NODE constant (e.g. "backend_agent")
+  nodeName    String
+  /// Lifecycle transition: STARTED | COMPLETED | FAILED | RETRIED | STUCK | ESCALATED
+  eventType   String
+  /// Token counts: { inputTokens: number, outputTokens: number, model: string }
+  costMeta    Json     @default("{}")
+  /// Cumulative run-level token spend at the time of this event
+  runTokens   Int      @default(0)
+  occurredAt  DateTime @default(now())
+
+  @@index([projectId, occurredAt])
+  @@map("event_logs")
+}
+
+model RunBudget {
+  id              String   @id @default(cuid())
+  projectId       String   @unique
+  project         Project  @relation(fields: [projectId], references: [id])
+  /// Hard token ceiling for this run (default: 200_000)
+  tokenBudget     Int      @default(200000)
+  /// Tokens consumed so far (charged by RunSupervisor on each node completion)
+  tokensConsumed  Int      @default(0)
+  /// Number of automatic retries already executed
+  retryCount      Int      @default(0)
+  /// Max auto-retries before escalating to human
+  maxRetries      Int      @default(2)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@map("run_budgets")
+}

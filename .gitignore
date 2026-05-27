@@ -1,0 +1,36 @@
+# dependencies
+node_modules/
+
+# environments
+.env
+.env.*.local
+.env.local
+
+# compiled output
+dist/
+build/
+
+# testing
+coverage/
+
+# logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+*.log
+
+# prisma
+*.db
+
+# misc
+.DS_Store
+.vscode/
+
+# Editor directories and files
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
