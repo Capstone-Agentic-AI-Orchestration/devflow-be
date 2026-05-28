@@ -41,8 +41,7 @@ async function assertOpenRouterPreflight() {
 
   const apiKey = process.env.OPENROUTER_API_KEY?.trim();
   if (!apiKey) {
-    console.log('LangGraph GitHub E2E smoke skipped: OPENROUTER_API_KEY is not configured.');
-    process.exit(0);
+    throw new Error('OPENROUTER_API_KEY is not configured.');
   }
 
   const baseUrl = process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1';
@@ -81,8 +80,7 @@ async function assertOpenAiPreflight() {
 
   const apiKey = process.env.OPENAI_API_KEY?.trim();
   if (!apiKey) {
-    console.log('LangGraph GitHub E2E smoke skipped: OPENAI_API_KEY is not configured.');
-    process.exit(0);
+    throw new Error('OPENAI_API_KEY is not configured.');
   }
 
   const baseUrl = process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1';
@@ -126,8 +124,7 @@ async function assertAnthropicPreflight() {
 
   const apiKey = process.env.ANTHROPIC_API_KEY?.trim();
   if (!apiKey) {
-    console.log('LangGraph GitHub E2E smoke skipped: ANTHROPIC_API_KEY is not configured.');
-    process.exit(0);
+    throw new Error('ANTHROPIC_API_KEY is not configured.');
   }
 
   const baseUrl = process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com/v1';
@@ -158,6 +155,37 @@ async function assertAnthropicPreflight() {
       `Anthropic preflight failed (${response.status}): ${parseOpenRouterError(body).slice(0, 500)}`,
     );
   }
+}
+
+async function assertProviderPreflight() {
+  await assertOpenRouterPreflight();
+  await assertOpenAiPreflight();
+  await assertAnthropicPreflight();
+}
+
+async function selectLlmProvider() {
+  const requestedProvider = process.env.LLM_PROVIDER || 'openrouter';
+  const autoSelect = process.env.LANGGRAPH_GITHUB_SMOKE_PROVIDER_AUTO !== 'false';
+  const candidates = autoSelect
+    ? [...new Set([requestedProvider, 'openrouter', 'openai', 'anthropic'])]
+    : [requestedProvider];
+  const failures = [];
+
+  for (const provider of candidates) {
+    process.env.LLM_PROVIDER = provider;
+    try {
+      await assertProviderPreflight();
+      console.log(`LangGraph GitHub E2E smoke using ${provider} provider.`);
+      return provider;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      failures.push(`${provider}: ${message}`);
+    }
+  }
+
+  throw new Error(
+    `No usable LLM provider passed preflight. ${failures.join(' | ')}`,
+  );
 }
 
 async function waitForProjectStatus(prisma, orchestration, projectId, expectedStatuses, timeoutMs, label) {
@@ -205,9 +233,7 @@ if (process.env.LANGGRAPH_GITHUB_SMOKE_TRACE !== 'true') {
   process.env.LANGCHAIN_TRACING_V2 = 'false';
 }
 
-await assertOpenRouterPreflight();
-await assertOpenAiPreflight();
-await assertAnthropicPreflight();
+await selectLlmProvider();
 
 const [{ NestFactory }, { AppModule }, { PrismaService }, { OrchestrationService }, { GithubService }] =
   await Promise.all([
@@ -228,11 +254,6 @@ try {
 
   if (!githubStatus.available) {
     console.log(`LangGraph GitHub E2E smoke skipped: ${githubStatus.reason}`);
-    process.exit(0);
-  }
-
-  if (!process.env.OPENROUTER_API_KEY?.trim()) {
-    console.log('LangGraph GitHub E2E smoke skipped: OPENROUTER_API_KEY is not configured.');
     process.exit(0);
   }
 

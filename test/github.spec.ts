@@ -2,12 +2,18 @@ import 'reflect-metadata';
 import { describe, expect, it, vi } from 'vitest';
 import { ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { generateKeyPairSync } from 'node:crypto';
 import { GithubService } from '../src/github/github.service';
 
 function makeConfig(values: Record<string, unknown>) {
   return {
     get: vi.fn((key: string) => values[key]),
   } as unknown as ConfigService;
+}
+
+function validPrivateKey(): string {
+  const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
+  return privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
 }
 
 describe('GithubService', () => {
@@ -33,7 +39,7 @@ describe('GithubService', () => {
   it('uses explicit GITHUB_ORG as the repository owner', async () => {
     const service = new GithubService(makeConfig({
       'github.appId': '12345',
-      'github.privateKey': '-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE KEY-----',
+      'github.privateKey': validPrivateKey(),
       'github.installationId': 67890,
       'github.org': 'capstone-org',
     }));
@@ -70,7 +76,7 @@ describe('GithubService', () => {
   it('commits files by creating blobs, a tree, a commit, and updating main', async () => {
     const service = new GithubService(makeConfig({
       'github.appId': '12345',
-      'github.privateKey': '-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE KEY-----',
+      'github.privateKey': validPrivateKey(),
       'github.installationId': 67890,
       'github.org': 'capstone-org',
     }));
@@ -123,5 +129,23 @@ describe('GithubService', () => {
     await expect(service.createRepo('missing-config')).rejects.toBeInstanceOf(
       ServiceUnavailableException,
     );
+  });
+
+  it('reports an invalid private key as not ready for delivery', () => {
+    const service = new GithubService(makeConfig({
+      'github.appId': '12345',
+      'github.privateKey': '-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE KEY-----',
+      'github.installationId': 67890,
+      'github.org': 'capstone-org',
+    }));
+    service.onModuleInit();
+
+    expect(service.getDeliveryStatus()).toEqual(expect.objectContaining({
+      configured: false,
+      available: false,
+      owner: 'capstone-org',
+      missingRequirements: ['valid GITHUB_PRIVATE_KEY'],
+      reason: 'GitHub delivery requires valid GITHUB_PRIVATE_KEY.',
+    }));
   });
 });

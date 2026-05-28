@@ -2,6 +2,7 @@ import { Injectable, Logger, OnModuleInit, ServiceUnavailableException } from '@
 import { ConfigService } from '@nestjs/config';
 import { Octokit } from '@octokit/rest';
 import { createAppAuth } from '@octokit/auth-app';
+import { createPrivateKey } from 'node:crypto';
 import { GitHubArtifact } from './github.types';
 
 export interface GithubDeliveryStatus {
@@ -46,6 +47,7 @@ export class GithubService implements OnModuleInit {
   private ownerSource: GithubDeliveryStatus['ownerSource'] = null;
   private hasAppId = false;
   private hasPrivateKey = false;
+  private privateKeyValid = false;
 
   constructor(private readonly configService: ConfigService) {}
 
@@ -54,13 +56,14 @@ export class GithubService implements OnModuleInit {
     const privateKey = this.configService.get<string>('github.privateKey');
     this.hasAppId = Boolean(appId);
     this.hasPrivateKey = Boolean(privateKey);
+    this.privateKeyValid = this.isPrivateKeyValid(privateKey);
     this.installationId = this.configService.get<number>(
       'github.installationId',
     ) ?? 0;
     this.ownerLogin = this.configService.get<string>('github.org') ?? '';
     this.ownerSource = this.ownerLogin ? 'env' : null;
 
-    if (!appId || !privateKey || !this.installationId) {
+    if (!appId || !privateKey || !this.privateKeyValid || !this.installationId) {
       this.logger.warn(
         'GitHub App credentials are not configured; GitHub commit automation is disabled',
       );
@@ -223,8 +226,20 @@ export class GithubService implements OnModuleInit {
     const missing: string[] = [];
     if (!this.hasAppId) missing.push('GITHUB_APP_ID');
     if (!this.hasPrivateKey) missing.push('GITHUB_PRIVATE_KEY');
+    if (this.hasPrivateKey && !this.privateKeyValid) missing.push('valid GITHUB_PRIVATE_KEY');
     if (!this.installationId) missing.push('GITHUB_INSTALLATION_ID');
     if (!this.ownerLogin) missing.push('GITHUB_ORG');
     return [...new Set(missing)];
+  }
+
+  private isPrivateKeyValid(privateKey: string | undefined): boolean {
+    if (!privateKey) return false;
+
+    try {
+      createPrivateKey(privateKey);
+      return true;
+    } catch {
+      return false;
+    }
   }
 }

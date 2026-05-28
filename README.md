@@ -84,9 +84,9 @@ LANGCHAIN_PROJECT="devflow"
 
 The LangGraph path defines DevFlow's own agents: requirements parser, contract negotiator, frontend, backend, database, architecture, validator, and GitHub commit. LangGraph controls ordering, parallel fan-out, retries, and human approval gates. OpenRouter only supplies the model calls inside those custom agents. After Gate 2 approval, the GitHub commit node creates a private repository through the configured GitHub App, commits generated artifacts, injects CI, and stores `repoUrl` on the project.
 
-GitHub delivery requires `GITHUB_APP_ID`, base64-encoded `GITHUB_PRIVATE_KEY`, `GITHUB_INSTALLATION_ID`, and `GITHUB_ORG`. The orchestration provider endpoint includes `githubDelivery` readiness details so the app can show missing setup before Gate 2 delivery fails.
+GitHub delivery requires `GITHUB_APP_ID`, a valid base64-encoded PEM `GITHUB_PRIVATE_KEY`, `GITHUB_INSTALLATION_ID`, and `GITHUB_ORG`. The orchestration provider endpoint includes `githubDelivery` readiness details so the app can show missing setup before Gate 2 delivery fails.
 
-`npm run smoke:langgraph-github` is safe by default and skips before creating a repository. Set `LANGGRAPH_GITHUB_SMOKE_CREATE=true` only when you intentionally want a real end-to-end smoke repository created through the full LangGraph Gate 1 -> Gate 2 -> GitHub delivery flow.
+`npm run smoke:langgraph-github` is safe by default and skips before creating a repository. Set `LANGGRAPH_GITHUB_SMOKE_CREATE=true` only when you intentionally want a real end-to-end smoke repository created through the full LangGraph Gate 1 -> Gate 2 -> GitHub delivery flow. The live smoke preflights OpenRouter, OpenAI, and Anthropic and uses the first configured provider that accepts a real request; set `LANGGRAPH_GITHUB_SMOKE_PROVIDER_AUTO=false` to test only the configured `LLM_PROVIDER`.
 
 ## Scripts
 
