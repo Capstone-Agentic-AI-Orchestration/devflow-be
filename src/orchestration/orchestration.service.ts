@@ -5,7 +5,7 @@ import {
   Optional,
 } from '@nestjs/common';
 import { createId } from '@paralleldrive/cuid2';
-import type { CompiledStateGraph } from '@langchain/langgraph';
+import { Annotation, END, START, StateGraph, type CompiledStateGraph } from '@langchain/langgraph';
 import type { PostgresSaver } from '@langchain/langgraph-checkpoint-postgres';
 import type { RunnableConfig } from '@langchain/core/runnables';
 import { createCheckpointer } from './graph/checkpointer';
@@ -22,7 +22,20 @@ import { ValidatorNode } from './nodes/validator.node';
 import { GithubCommitNode } from './nodes/github-commit.node';
 import { MemoryService } from '../memory/memory.service';
 import { DevFlowGateway } from '../gateway/devflow.gateway';
-import { ProjectTaskActivityType, ProjectTaskStatus, WorkOrderAgentType, WorkOrderStatus } from '@prisma/client';
+import { NotificationsService } from '../notifications/notifications.service';
+import { MockAgentProvider } from './providers/mock-agent.provider';
+import { AgentProviderMode } from './providers/agent-provider.types';
+import {
+  NotificationType,
+  Prisma,
+  ProjectStatus,
+  ProjectTaskActivityType,
+  ProjectTaskStatus,
+  ProjectTimelineEventType,
+  ProjectTimelineVisibility,
+  WorkOrderAgentType,
+  WorkOrderStatus,
+} from '@prisma/client';
 
 // ─── Thread Config Helper ─────────────────────────────────────────────────────
 
@@ -51,6 +64,60 @@ export interface WorkOrderExecutionResult {
   artifactId: string;
 }
 
+interface WorkOrderExecutionOptions {
+  emitLifecycleEvents?: boolean;
+}
+
+const MOCK_NODE = {
+  LOAD_READY_WORK_ORDERS: 'load_ready_work_orders',
+  EXECUTE_READY_WORK_ORDERS: 'execute_ready_work_orders',
+  FINALIZE: 'finalize_mock_orchestration',
+} as const;
+
+const MockWorkOrderState = Annotation.Root({
+  projectId: Annotation<string>(),
+  runId: Annotation<string>(),
+  actorId: Annotation<string | null>({
+    default: () => null,
+    reducer: (_, next) => next,
+  }),
+  readyWorkOrderIds: Annotation<string[]>({
+    default: () => [],
+    reducer: (_, next) => next,
+  }),
+  completedArtifactIds: Annotation<string[]>({
+    default: () => [],
+    reducer: (existing, next) => [...existing, ...next],
+  }),
+  failedWorkOrderIds: Annotation<string[]>({
+    default: () => [],
+    reducer: (existing, next) => [...existing, ...next],
+  }),
+  error: Annotation<string | null>({
+    default: () => null,
+    reducer: (_, next) => next,
+  }),
+});
+
+type MockWorkOrderStateType = typeof MockWorkOrderState.State;
+
+type MockWorkOrderGraphBuilder = {
+  addNode(
+    name: string,
+    action: (
+      state: MockWorkOrderStateType,
+    ) => Partial<MockWorkOrderStateType> | Promise<Partial<MockWorkOrderStateType>>,
+  ): MockWorkOrderGraphBuilder;
+  addEdge(start: string, end: string): MockWorkOrderGraphBuilder;
+  compile(input: {
+    checkpointer: PostgresSaver;
+  }): CompiledStateGraph<
+    MockWorkOrderStateType,
+    Partial<MockWorkOrderStateType>,
+    string
+  >;
+};
+
 // ─── Service ──────────────────────────────────────────────────────────────────
 
 @Injectable()
@@ -60,6 +127,11 @@ export class OrchestrationService implements OnModuleInit {
   private graph!: CompiledStateGraph<
     DevFlowStateType,
     Partial<DevFlowStateType>,
+    string
+  >;
+  private mockWorkOrderGraph!: CompiledStateGraph<
+    MockWorkOrderStateType,
+    Partial<MockWorkOrderStateType>,
     string
   >;
   private checkpointer!: PostgresSaver;
@@ -75,6 +147,8 @@ export class OrchestrationService implements OnModuleInit {
     private readonly validator: ValidatorNode,
     private readonly githubCommit: GithubCommitNode,
     private readonly memory: MemoryService,
+    private readonly mockAgentProvider: MockAgentProvider,
+    private readonly notifications: NotificationsService,
     // Optional: WebSocket gateway may not be present in all environments
     @Optional() private readonly gateway: DevFlowGateway | null,
   ) {}
@@ -94,6 +168,7 @@ export class OrchestrationService implements OnModuleInit {
       this.prisma,
       this.checkpointer,
     );
+    this.mockWorkOrderGraph = this.buildMockWorkOrderGraph();
     this.logger.log('Orchestration graph initialized and compiled');
   }
 
@@ -107,6 +182,7 @@ export class OrchestrationService implements OnModuleInit {
     brief: string,
     stackKey: string,
     companyName: string,
+    actorId?: string,
   ): Promise<string> {
     const runId = createId();
 
@@ -122,9 +198,32 @@ export class OrchestrationService implements OnModuleInit {
     // Initialise run budget (Phase 2B)
     await this.prisma.runBudget.create({
       data: { projectId },
-    });
+    }).catch(() => undefined);
 
     const config = threadConfig(projectId, runId);
+
+    if (this.agentProviderMode() === 'mock') {
+      const initialInput: Partial<MockWorkOrderStateType> = {
+        projectId,
+        runId,
+        actorId: actorId ?? null,
+      };
+
+      this.mockWorkOrderGraph.invoke(initialInput, config).catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        this.logger.error(
+          `Mock orchestration run ${runId} for project ${projectId} failed: ${message}`,
+        );
+      });
+
+      this.gateway?.emitStatusUpdate(
+        projectId,
+        ProjectStatus.GENERATING_CODE,
+        MOCK_NODE.LOAD_READY_WORK_ORDERS,
+      );
+
+      return runId;
+    }
 
     const initialInput: Partial<DevFlowStateType> = {
       projectId,
@@ -390,12 +489,21 @@ export class OrchestrationService implements OnModuleInit {
     projectId: string,
     workOrderId: string,
     actorId?: string,
+    options: WorkOrderExecutionOptions = {},
   ): Promise<WorkOrderExecutionResult> {
     const executionRunId = createId();
     const startedAt = new Date();
     const workOrder = await this.prisma.workOrder.findFirst({
       where: { id: workOrderId, projectId },
       include: {
+        project: {
+          select: {
+            id: true,
+            companyName: true,
+            brief: true,
+            stackKey: true,
+          },
+        },
         task: {
           select: {
             id: true,
@@ -437,6 +545,30 @@ export class OrchestrationService implements OnModuleInit {
       },
     });
 
+    if (options.emitLifecycleEvents) {
+      await Promise.all([
+        this.recordWorkOrderTimelineEvent(projectId, actorId, {
+          type: ProjectTimelineEventType.WORK_ORDER_DISPATCHED,
+          taskId: workOrder.taskId,
+          artifactId: workOrder.artifactId,
+          title: 'Work order dispatched',
+          body: workOrder.title,
+          metadata: {
+            workOrderId,
+            executionRunId,
+            attempt,
+            agentType: workOrder.agentType,
+          },
+        }),
+        this.notifyWorkOrderLifecycle(projectId, actorId, workOrder, {
+          type: NotificationType.WORK_ORDER_DISPATCHED,
+          title: 'Work order dispatched',
+          status: WorkOrderStatus.DISPATCHED,
+          executionRunId,
+        }),
+      ]);
+    }
+
     await this.prisma.eventLog.create({
       data: {
         projectId,
@@ -457,13 +589,27 @@ export class OrchestrationService implements OnModuleInit {
 
     try {
       const completedAt = new Date();
+      const output = this.mockAgentProvider.generateWorkOrderOutput({
+        project: workOrder.project,
+        workOrder: {
+          id: workOrder.id,
+          title: workOrder.title,
+          instructions: workOrder.instructions,
+          agentType: workOrder.agentType,
+          priority: workOrder.priority,
+        },
+        task: workOrder.task,
+        sourceArtifact: workOrder.artifact,
+        executionRunId,
+      });
+
       const artifact = await this.prisma.artifact.create({
         data: {
           projectId,
           agentType: workOrder.agentType.toLowerCase(),
-          filePath: this.workOrderArtifactPath(workOrder.agentType, workOrder.id),
-          displayName: `${workOrder.title} output`,
-          content: this.renderWorkOrderArtifactContent(workOrder, executionRunId),
+          filePath: output.filePath,
+          displayName: output.displayName,
+          content: output.content,
           clientVisible: false,
         },
       });
@@ -520,6 +666,32 @@ export class OrchestrationService implements OnModuleInit {
         },
       });
 
+      if (options.emitLifecycleEvents) {
+        await Promise.all([
+          this.recordWorkOrderTimelineEvent(projectId, actorId, {
+            type: ProjectTimelineEventType.WORK_ORDER_STATUS_CHANGED,
+            taskId: workOrder.taskId,
+            artifactId: artifact.id,
+            title: 'Work order execution completed',
+            body: workOrder.title,
+            metadata: {
+              workOrderId,
+              from: WorkOrderStatus.DISPATCHED,
+              to: WorkOrderStatus.COMPLETED,
+              executionRunId,
+              artifactId: artifact.id,
+            },
+          }),
+          this.notifyWorkOrderLifecycle(projectId, actorId, workOrder, {
+            type: NotificationType.WORK_ORDER_STATUS_CHANGED,
+            title: 'Work order completed',
+            status: WorkOrderStatus.COMPLETED,
+            executionRunId,
+            artifactId: artifact.id,
+          }),
+        ]);
+      }
+
       this.gateway?.emitStatusUpdate(projectId, 'AWAITING_GATE_2', nodeName);
       return { executionRunId, artifactId: artifact.id };
     } catch (error) {
@@ -557,6 +729,195 @@ export class OrchestrationService implements OnModuleInit {
 
   // ── Private helpers ────────────────────────────────────────────────────────
 
+  private buildMockWorkOrderGraph(): CompiledStateGraph<
+    MockWorkOrderStateType,
+    Partial<MockWorkOrderStateType>,
+    string
+  > {
+    const graph = new StateGraph(
+      MockWorkOrderState,
+    ) as unknown as MockWorkOrderGraphBuilder;
+
+    graph.addNode(MOCK_NODE.LOAD_READY_WORK_ORDERS, async (state) => {
+      const readyWorkOrders = await this.prisma.workOrder.findMany({
+        where: {
+          projectId: state.projectId,
+          status: WorkOrderStatus.READY,
+        },
+        select: { id: true, instructions: true },
+        orderBy: [{ priority: 'desc' }, { createdAt: 'asc' }],
+      });
+
+      const readyWorkOrderIds = readyWorkOrders
+        .filter((workOrder) => workOrder.instructions?.trim())
+        .map((workOrder) => workOrder.id);
+
+      if (readyWorkOrderIds.length === 0) {
+        return {
+          error: 'No READY work orders with instructions are available for orchestration.',
+        };
+      }
+
+      const startedAt = new Date();
+      await Promise.all([
+        this.prisma.project.update({
+          where: { id: state.projectId },
+          data: { status: ProjectStatus.GENERATING_CODE },
+        }),
+        this.prisma.eventLog.create({
+          data: {
+            projectId: state.projectId,
+            nodeName: MOCK_NODE.LOAD_READY_WORK_ORDERS,
+            eventType: 'STARTED',
+            costMeta: {
+              provider: this.mockAgentProvider.mode,
+              runId: state.runId,
+              workOrderCount: readyWorkOrderIds.length,
+            },
+            runTokens: 0,
+            occurredAt: startedAt,
+          },
+        }),
+        this.prisma.projectTimelineEvent.create({
+          data: {
+            projectId: state.projectId,
+            actorId: state.actorId,
+            type: ProjectTimelineEventType.PROJECT_UPDATED,
+            visibility: ProjectTimelineVisibility.TEAM,
+            title: 'Orchestration started',
+            body: `${readyWorkOrderIds.length} ready work order${readyWorkOrderIds.length === 1 ? '' : 's'} queued for mock agent execution.`,
+            metadata: {
+              provider: this.mockAgentProvider.mode,
+              runId: state.runId,
+              readyWorkOrderIds,
+            },
+          },
+        }),
+      ]);
+
+      return { readyWorkOrderIds };
+    });
+
+    graph.addNode(MOCK_NODE.EXECUTE_READY_WORK_ORDERS, async (state) => {
+      if (state.error) return {};
+
+      const completedArtifactIds: string[] = [];
+      const failedWorkOrderIds: string[] = [];
+
+      for (const workOrderId of state.readyWorkOrderIds) {
+        try {
+          const result = await this.executeWorkOrder(
+            state.projectId,
+            workOrderId,
+            state.actorId ?? undefined,
+            { emitLifecycleEvents: true },
+          );
+          completedArtifactIds.push(result.artifactId);
+        } catch {
+          failedWorkOrderIds.push(workOrderId);
+        }
+      }
+
+      return {
+        completedArtifactIds,
+        failedWorkOrderIds,
+        error:
+          failedWorkOrderIds.length > 0
+            ? `${failedWorkOrderIds.length} work order execution${failedWorkOrderIds.length === 1 ? '' : 's'} failed.`
+            : null,
+      };
+    });
+
+    graph.addNode(MOCK_NODE.FINALIZE, async (state) => {
+      const failed = state.error || state.failedWorkOrderIds.length > 0;
+      const completedAt = new Date();
+      const status = failed
+        ? ProjectStatus.FAILED
+        : ProjectStatus.AWAITING_GATE_2;
+      const title = failed
+        ? 'Orchestration failed'
+        : 'Orchestration outputs ready';
+      const body = failed
+        ? state.error
+        : `${state.completedArtifactIds.length} artifact${state.completedArtifactIds.length === 1 ? '' : 's'} ready for PM output review.`;
+
+      await Promise.all([
+        this.prisma.project.update({
+          where: { id: state.projectId },
+          data: { status },
+        }),
+        this.prisma.eventLog.create({
+          data: {
+            projectId: state.projectId,
+            nodeName: MOCK_NODE.FINALIZE,
+            eventType: failed ? 'FAILED' : 'COMPLETED',
+            costMeta: {
+              provider: this.mockAgentProvider.mode,
+              runId: state.runId,
+              completedArtifactIds: state.completedArtifactIds,
+              failedWorkOrderIds: state.failedWorkOrderIds,
+              error: state.error,
+            },
+            runTokens: 0,
+            occurredAt: completedAt,
+          },
+        }),
+        this.prisma.projectTimelineEvent.create({
+          data: {
+            projectId: state.projectId,
+            actorId: state.actorId,
+            type: ProjectTimelineEventType.PROJECT_UPDATED,
+            visibility: ProjectTimelineVisibility.TEAM,
+            title,
+            body,
+            metadata: {
+              provider: this.mockAgentProvider.mode,
+              runId: state.runId,
+              completedArtifactIds: state.completedArtifactIds,
+              failedWorkOrderIds: state.failedWorkOrderIds,
+            },
+          },
+        }),
+      ]);
+
+      if (!failed) {
+        await this.notifications.notify({
+          recipientIds: await this.notifications.projectManagers(state.projectId),
+          actorId: state.actorId,
+          projectId: state.projectId,
+          type: NotificationType.WORK_ORDER_STATUS_CHANGED,
+          title: 'Orchestration outputs ready',
+          body,
+          metadata: {
+            provider: this.mockAgentProvider.mode,
+            runId: state.runId,
+            artifactCount: state.completedArtifactIds.length,
+          },
+        });
+      }
+
+      this.gateway?.emitStatusUpdate(
+        state.projectId,
+        status,
+        MOCK_NODE.FINALIZE,
+        state.error ?? undefined,
+      );
+
+      return {};
+    });
+
+    graph.addEdge(START, MOCK_NODE.LOAD_READY_WORK_ORDERS);
+    graph.addEdge(MOCK_NODE.LOAD_READY_WORK_ORDERS, MOCK_NODE.EXECUTE_READY_WORK_ORDERS);
+    graph.addEdge(MOCK_NODE.EXECUTE_READY_WORK_ORDERS, MOCK_NODE.FINALIZE);
+    graph.addEdge(MOCK_NODE.FINALIZE, END);
+
+    return graph.compile({ checkpointer: this.checkpointer });
+  }
+
+  private agentProviderMode(): AgentProviderMode {
+    return process.env.AGENT_PROVIDER === 'llm' ? 'llm' : 'mock';
+  }
+
   private async getRunId(projectId: string): Promise<string> {
     const project = await this.prisma.project.findUnique({
       where: { id: projectId },
@@ -588,53 +949,69 @@ export class OrchestrationService implements OnModuleInit {
     return `work_order_${agentType.toLowerCase()}`;
   }
 
-  private workOrderArtifactPath(agentType: WorkOrderAgentType, workOrderId: string): string {
-    const extension = agentType === WorkOrderAgentType.DATABASE ? 'sql' : 'md';
-    return `work-orders/${workOrderId}/${agentType.toLowerCase()}-output.${extension}`;
+  private async recordWorkOrderTimelineEvent(
+    projectId: string,
+    actorId: string | undefined,
+    input: {
+      type: ProjectTimelineEventType;
+      title: string;
+      body?: string | null;
+      taskId?: string | null;
+      artifactId?: string | null;
+      metadata?: Prisma.InputJsonValue;
+    },
+  ): Promise<void> {
+    await this.prisma.projectTimelineEvent.create({
+      data: {
+        projectId,
+        actorId: actorId ?? null,
+        taskId: input.taskId ?? null,
+        artifactId: input.artifactId ?? null,
+        type: input.type,
+        visibility: ProjectTimelineVisibility.TEAM,
+        title: input.title,
+        body: input.body ?? null,
+        metadata: input.metadata ?? {},
+      },
+    });
   }
 
-  private renderWorkOrderArtifactContent(
+  private async notifyWorkOrderLifecycle(
+    projectId: string,
+    actorId: string | undefined,
     workOrder: {
       id: string;
       title: string;
-      instructions: string | null;
       agentType: WorkOrderAgentType;
-      priority: string;
-      task: { title: string; description: string | null } | null;
-      artifact: { filePath: string; displayName: string | null; content: string } | null;
+      taskId: string | null;
+      task: { assignedToId: string | null } | null;
     },
-    executionRunId: string,
-  ): string {
-    const lines = [
-      `# ${workOrder.title}`,
-      '',
-      `Execution run: ${executionRunId}`,
-      `Work order: ${workOrder.id}`,
-      `Agent: ${workOrder.agentType}`,
-      `Priority: ${workOrder.priority}`,
-      '',
-      '## Instructions',
-      workOrder.instructions || 'No explicit instructions were provided.',
-    ];
-
-    if (workOrder.task) {
-      lines.push('', '## Linked task', workOrder.task.title);
-      if (workOrder.task.description) lines.push('', workOrder.task.description);
-    }
-
-    if (workOrder.artifact) {
-      lines.push(
-        '',
-        '## Source artifact',
-        workOrder.artifact.displayName || workOrder.artifact.filePath,
-        '',
-        '```',
-        workOrder.artifact.content,
-        '```',
-      );
-    }
-
-    lines.push('', '## Execution result', 'Generated by the DevFlow work-order orchestration bridge.');
-    return lines.join('\n');
+    input: {
+      type: NotificationType;
+      title: string;
+      status: WorkOrderStatus;
+      executionRunId: string;
+      artifactId?: string;
+    },
+  ): Promise<void> {
+    await this.notifications.notify({
+      recipientIds: [
+        ...(await this.notifications.projectManagers(projectId)),
+        ...(workOrder.task?.assignedToId ? [workOrder.task.assignedToId] : []),
+      ],
+      actorId: actorId ?? null,
+      projectId,
+      taskId: workOrder.taskId,
+      artifactId: input.artifactId ?? null,
+      type: input.type,
+      title: input.title,
+      body: workOrder.title,
+      metadata: {
+        workOrderId: workOrder.id,
+        status: input.status,
+        agentType: workOrder.agentType,
+        executionRunId: input.executionRunId,
+      },
+    });
   }
 }

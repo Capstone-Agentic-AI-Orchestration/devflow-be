@@ -27,6 +27,9 @@ export default () => {
     database: {
       url: env.data.DATABASE_URL,
     },
+    orchestration: {
+      agentProvider: env.data.AGENT_PROVIDER,
+    },
     supabase: {
       url: env.data.SUPABASE_URL,
     },
@@ -37,11 +40,13 @@ export default () => {
       apiKey: env.data.OPENAI_API_KEY,
     },
     github: {
-      appId: env.data.GITHUB_APP_ID,
-      privateKey: Buffer.from(env.data.GITHUB_PRIVATE_KEY, 'base64').toString(
-        'utf-8',
-      ),
-      installationId: parseInt(env.data.GITHUB_INSTALLATION_ID, 10),
+      appId: env.data.GITHUB_APP_ID || undefined,
+      privateKey: env.data.GITHUB_PRIVATE_KEY
+        ? Buffer.from(env.data.GITHUB_PRIVATE_KEY, 'base64').toString('utf-8')
+        : undefined,
+      installationId: env.data.GITHUB_INSTALLATION_ID
+        ? parseInt(env.data.GITHUB_INSTALLATION_ID, 10)
+        : undefined,
     },
     // Phase 2E — LangSmith tracing (auto-instrumented via env vars)
     langsmith: {

@@ -323,6 +323,14 @@ export class ProjectsService {
             status: true,
           },
         },
+        workOrders: {
+          where: {
+            status: WorkOrderStatus.READY,
+          },
+          select: {
+            instructions: true,
+          },
+        },
       },
     });
 
@@ -338,11 +346,16 @@ export class ProjectsService {
       throw new BadRequestException('Project kickoff must be complete before orchestration can start');
     }
 
+    if (!project.workOrders.some((workOrder) => workOrder.instructions?.trim())) {
+      throw new BadRequestException('At least one READY work order with instructions is required before orchestration can start');
+    }
+
     const runId = await this.orchestration.startRun(
       project.id,
       project.brief,
       project.stackKey,
       project.companyName,
+      user.id,
     );
 
     return { accepted: true, runId };

@@ -43,27 +43,30 @@ Required:
 ```env
 DATABASE_URL="postgresql://..."
 SUPABASE_URL="https://your-project-ref.supabase.co"
-ANTHROPIC_API_KEY="sk-ant-..."
-OPENAI_API_KEY="sk-..."
-GITHUB_APP_ID="123456"
-GITHUB_PRIVATE_KEY="<base64-encoded PEM key>"
-GITHUB_INSTALLATION_ID="12345678"
 ```
 
 Common optional values:
 
 ```env
+AGENT_PROVIDER="mock"
 PORT=4000
 NODE_ENV="development"
 CORS_ORIGIN="http://localhost:3000"
 SUPABASE_SERVICE_ROLE_KEY=""
 SUPABASE_ANON_KEY=""
+ANTHROPIC_API_KEY=""
+OPENAI_API_KEY=""
+GITHUB_APP_ID=""
+GITHUB_PRIVATE_KEY=""
+GITHUB_INSTALLATION_ID=""
 LANGCHAIN_API_KEY=""
 LANGCHAIN_TRACING_V2="false"
 LANGCHAIN_PROJECT="devflow"
 ```
 
 `SUPABASE_SERVICE_ROLE_KEY` is server-side only. Never expose it to `devlow-frontend`.
+
+`AGENT_PROVIDER=mock` runs the deterministic local orchestration provider and does not require OpenAI, Anthropic, or GitHub credentials. Use `AGENT_PROVIDER=llm` only when those credentials are configured.
 
 ## Scripts
 
@@ -147,7 +150,7 @@ Authenticated:
 | Notifications | `GET /notifications`, read endpoints |
 | Profiles | `GET /profiles` for PM/ADMIN profile search |
 | Client invites | `GET /client-invites/me`, `POST /client-invites/accept` for CLIENT users |
-| Orchestration bridge | `POST /projects/:id/orchestration/start`, status/gate endpoints, work-order dispatch |
+| Orchestration bridge | `POST /projects/:id/orchestration/start`, status/gate endpoints, mock-provider work-order dispatch |
 
 See `docs/architecture/production-readiness.md` for the role matrix, lifecycle rules, data-integrity rules, and verification baseline.
 

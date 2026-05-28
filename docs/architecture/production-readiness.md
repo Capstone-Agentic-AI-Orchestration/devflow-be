@@ -73,7 +73,8 @@ Frontend route guards mirror this matrix with `RequireAuth`; backend guards rema
 
 ## Pending And Demo Boundaries
 
-- The orchestrator is intentionally the final major integration target. The surrounding project, auth, review, collaboration, and delivery lifecycle should remain stable before deeper orchestration changes.
+- The orchestrator now starts with `AGENT_PROVIDER=mock`: a deterministic local LangGraph flow that dispatches READY work orders, creates artifacts, records event logs/timeline entries, and moves output to PM review without external AI keys.
+- `AGENT_PROVIDER=llm` is reserved for the older model-backed graph path and requires OpenAI/Anthropic/GitHub credentials before it should be used.
 - PM, DEV, and CLIENT operational workspaces should use live backend APIs only. Legacy mock datasets must not be imported by these production flows.
 - The ADMIN workspace still uses isolated demo data in `devlow-frontend/src/features/admin/shared/model/admin.mock.ts` and should be treated as a demo/admin-planning surface until admin APIs are implemented.
 - PM calendar, PM AI usage, PM reports, DEV folders, DEV GitHub sync, DEV calendar, IDE telemetry, scheduling, and production deployment status intentionally show backend-pending states where no durable backend model exists yet.

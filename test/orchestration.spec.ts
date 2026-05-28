@@ -11,6 +11,8 @@ import { DatabaseAgentNode } from '../src/orchestration/nodes/database-agent.nod
 import { ArchitectureAgentNode } from '../src/orchestration/nodes/architecture-agent.node';
 import { ValidatorNode } from '../src/orchestration/nodes/validator.node';
 import { GithubCommitNode } from '../src/orchestration/nodes/github-commit.node';
+import { MockAgentProvider } from '../src/orchestration/providers/mock-agent.provider';
+import { NotificationsService } from '../src/notifications/notifications.service';
 import type { RequirementsDocument, ProjectContract, GeneratedArtifact } from '../src/orchestration/graph/devflow.state';
 import { ArtifactReviewStatus, ProjectTaskStatus, WorkOrderAgentType, WorkOrderPriority, WorkOrderStatus } from '@prisma/client';
 
@@ -87,6 +89,9 @@ function makePrismaMock() {
     eventLog: {
       create: vi.fn().mockResolvedValue({}),
     },
+    projectTimelineEvent: {
+      create: vi.fn().mockResolvedValue({}),
+    },
     projectTask: {
       update: vi.fn().mockResolvedValue({}),
     },
@@ -108,6 +113,13 @@ function makeMemoryMock() {
   };
 }
 
+function makeNotificationsMock() {
+  return {
+    notify: vi.fn().mockResolvedValue(undefined),
+    projectManagers: vi.fn().mockResolvedValue(['pm-2']),
+  };
+}
+
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 describe('OrchestrationService', () => {
@@ -122,10 +134,14 @@ describe('OrchestrationService', () => {
   let validator: { execute: ReturnType<typeof vi.fn> };
   let githubCommit: { execute: ReturnType<typeof vi.fn> };
   let memory: ReturnType<typeof makeMemoryMock>;
+  let mockAgentProvider: MockAgentProvider;
+  let notifications: ReturnType<typeof makeNotificationsMock>;
 
   beforeEach(() => {
     prisma = makePrismaMock();
     memory = makeMemoryMock();
+    mockAgentProvider = new MockAgentProvider();
+    notifications = makeNotificationsMock();
 
     requirementsParser = makeNodeMock({ requirements: MOCK_REQUIREMENTS });
     contractNegotiator = makeNodeMock({ contract: MOCK_CONTRACT });
@@ -174,6 +190,8 @@ describe('OrchestrationService', () => {
       validator as unknown as ValidatorNode,
       githubCommit as unknown as GithubCommitNode,
       memory as unknown as MemoryService,
+      mockAgentProvider,
+      notifications as unknown as NotificationsService,
       null,
     );
 
@@ -183,7 +201,7 @@ describe('OrchestrationService', () => {
 
   it('startRun updates project runId and returns a non-empty runId', async () => {
     // Stub graph invoke so it doesn't actually run
-    (service as unknown as { graph: { invoke: ReturnType<typeof vi.fn> } }).graph = {
+    (service as unknown as { mockWorkOrderGraph: { invoke: ReturnType<typeof vi.fn> } }).mockWorkOrderGraph = {
       invoke: vi.fn().mockResolvedValue({}),
     };
 
@@ -291,6 +309,12 @@ describe('OrchestrationService', () => {
       status: WorkOrderStatus.READY,
       executionAttempt: 0,
       dispatchedAt: null,
+      project: {
+        id: 'test-project-id',
+        companyName: 'TestCo',
+        brief: 'Build a shop',
+        stackKey: 'nextjs-nestjs',
+      },
       task: {
         id: 'task-1',
         title: 'Frontend dashboard',
@@ -327,7 +351,7 @@ describe('OrchestrationService', () => {
       data: expect.objectContaining({
         projectId: 'test-project-id',
         agentType: 'frontend',
-        filePath: 'work-orders/work-order-1/frontend-output.md',
+        filePath: 'work-orders/work-order-1/frontend-output.tsx',
         clientVisible: false,
       }),
     });

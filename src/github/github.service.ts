@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit, ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Octokit } from '@octokit/rest';
 import { createAppAuth } from '@octokit/auth-app';
@@ -38,11 +38,18 @@ export class GithubService implements OnModuleInit {
   constructor(private readonly configService: ConfigService) {}
 
   onModuleInit(): void {
-    const appId = this.configService.get<string>('github.appId')!;
-    const privateKey = this.configService.get<string>('github.privateKey')!;
+    const appId = this.configService.get<string>('github.appId');
+    const privateKey = this.configService.get<string>('github.privateKey');
     this.installationId = this.configService.get<number>(
       'github.installationId',
-    )!;
+    ) ?? 0;
+
+    if (!appId || !privateKey || !this.installationId) {
+      this.logger.warn(
+        'GitHub App credentials are not configured; GitHub commit automation is disabled',
+      );
+      return;
+    }
 
     this.octokit = new Octokit({
       authStrategy: createAppAuth,
@@ -66,6 +73,7 @@ export class GithubService implements OnModuleInit {
   }
 
   private async getOwner(): Promise<string> {
+    this.assertConfigured();
     if (this.ownerLogin) return this.ownerLogin;
     const { data } = await this.octokit.apps.getInstallation({
       installation_id: this.installationId,
@@ -76,6 +84,7 @@ export class GithubService implements OnModuleInit {
   }
 
   async createRepo(name: string): Promise<string> {
+    this.assertConfigured();
     this.logger.log(`Creating repository: ${name}`);
     const owner = await this.getOwner();
     const { data } = await this.octokit.repos.createInOrg({
@@ -94,6 +103,7 @@ export class GithubService implements OnModuleInit {
     artifacts: GitHubArtifact[],
     message: string,
   ): Promise<void> {
+    this.assertConfigured();
     this.logger.log(
       `Committing ${artifacts.length} files to ${repoName}: "${message}"`,
     );
@@ -166,5 +176,13 @@ export class GithubService implements OnModuleInit {
       ],
       'ci: add GitHub Actions workflow',
     );
+  }
+
+  private assertConfigured(): void {
+    if (!this.octokit || !this.installationId) {
+      throw new ServiceUnavailableException(
+        'GitHub commit automation is not configured',
+      );
+    }
   }
 }

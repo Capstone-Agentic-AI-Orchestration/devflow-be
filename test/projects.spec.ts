@@ -178,6 +178,7 @@ describe('ProjectsService', () => {
       stackKey: 'nextjs-nestjs-supabase',
       runId: null,
       kickoff: { status: ProjectKickoffStatus.READY },
+      workOrders: [{ instructions: 'Build the first dashboard shell.' }],
     });
 
     await expect(service.startOrchestration('project-1', pmUser)).resolves.toEqual({
@@ -189,6 +190,7 @@ describe('ProjectsService', () => {
       'Build a delivery dashboard',
       'nextjs-nestjs-supabase',
       'Acme Logistics',
+      pmUser.id,
     );
   });
 
@@ -200,6 +202,7 @@ describe('ProjectsService', () => {
       stackKey: 'nextjs-nestjs-supabase',
       runId: 'run-existing',
       kickoff: { status: ProjectKickoffStatus.DRAFT },
+      workOrders: [],
     });
 
     await expect(service.startOrchestration('project-1', pmUser)).resolves.toEqual({
@@ -225,6 +228,7 @@ describe('ProjectsService', () => {
       stackKey: 'nextjs-nestjs-supabase',
       runId: null,
       kickoff: { status: ProjectKickoffStatus.DRAFT },
+      workOrders: [{ instructions: 'Build the first dashboard shell.' }],
     });
 
     await expect(

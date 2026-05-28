@@ -3,6 +3,7 @@ import { GithubModule } from '../github/github.module';
 import { MemoryModule } from '../memory/memory.module';
 import { SupervisorModule } from '../supervisor/supervisor.module';
 import { GatewayModule } from '../gateway/gateway.module';
+import { NotificationsModule } from '../notifications/notifications.module';
 import { OrchestrationService } from './orchestration.service';
 import { RequirementsParserNode } from './nodes/requirements-parser.node';
 import { ContractNegotiatorNode } from './nodes/contract-negotiator.node';
@@ -12,6 +13,7 @@ import { DatabaseAgentNode } from './nodes/database-agent.node';
 import { ArchitectureAgentNode } from './nodes/architecture-agent.node';
 import { ValidatorNode } from './nodes/validator.node';
 import { GithubCommitNode } from './nodes/github-commit.node';
+import { MockAgentProvider } from './providers/mock-agent.provider';
 
 @Module({
   imports: [
@@ -23,6 +25,7 @@ import { GithubCommitNode } from './nodes/github-commit.node';
     // Phase 2E — import GatewayModule so DevFlowGateway can be injected
     // into OrchestrationService via @Optional().
     GatewayModule,
+    NotificationsModule,
   ],
   providers: [
     OrchestrationService,
@@ -34,6 +37,7 @@ import { GithubCommitNode } from './nodes/github-commit.node';
     ArchitectureAgentNode,
     ValidatorNode,
     GithubCommitNode,
+    MockAgentProvider,
   ],
   exports: [OrchestrationService],
 })

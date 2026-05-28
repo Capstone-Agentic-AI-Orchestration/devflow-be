@@ -3,15 +3,12 @@ import { z } from 'zod';
 export const envSchema = z.object({
   DATABASE_URL: z.string().url('DATABASE_URL must be a valid URL'),
   SUPABASE_URL: z.string().url('SUPABASE_URL must be a valid URL'),
-  ANTHROPIC_API_KEY: z.string().min(1, 'ANTHROPIC_API_KEY is required'),
-  OPENAI_API_KEY: z.string().min(1, 'OPENAI_API_KEY is required'),
-  GITHUB_APP_ID: z.string().min(1, 'GITHUB_APP_ID is required'),
-  GITHUB_PRIVATE_KEY: z
-    .string()
-    .min(1, 'GITHUB_PRIVATE_KEY is required (base64 encoded)'),
-  GITHUB_INSTALLATION_ID: z
-    .string()
-    .min(1, 'GITHUB_INSTALLATION_ID is required'),
+  AGENT_PROVIDER: z.enum(['mock', 'llm']).optional().default('mock'),
+  ANTHROPIC_API_KEY: z.string().optional().default(''),
+  OPENAI_API_KEY: z.string().optional().default(''),
+  GITHUB_APP_ID: z.string().optional().default(''),
+  GITHUB_PRIVATE_KEY: z.string().optional().default(''),
+  GITHUB_INSTALLATION_ID: z.string().optional().default(''),
   PORT: z
     .string()
     .optional()
@@ -40,6 +37,26 @@ export const envSchema = z.object({
     .default('300000')
     .transform((v) => parseInt(v, 10))
     .pipe(z.number().positive()),
+}).superRefine((env, ctx) => {
+  if (env.AGENT_PROVIDER !== 'llm') return;
+
+  const requiredForLlm: Array<keyof typeof env> = [
+    'ANTHROPIC_API_KEY',
+    'OPENAI_API_KEY',
+    'GITHUB_APP_ID',
+    'GITHUB_PRIVATE_KEY',
+    'GITHUB_INSTALLATION_ID',
+  ];
+
+  for (const key of requiredForLlm) {
+    if (!env[key]) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [key],
+        message: `${key} is required when AGENT_PROVIDER=llm`,
+      });
+    }
+  }
 });
 
 export type EnvSchema = z.infer<typeof envSchema>;
