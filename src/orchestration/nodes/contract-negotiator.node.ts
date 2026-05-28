@@ -114,14 +114,16 @@ Produce 5–10 acceptance criteria as clear, testable statements.`,
 
       const parsed = result.value;
 
+      const rawFileManifest = Array.isArray(parsed['fileManifest'])
+        ? (parsed['fileManifest'] as unknown[]).filter((filePath): filePath is string => typeof filePath === 'string')
+        : [];
+
       const contract: ProjectContract = {
         projectId: state.projectId,
         projectName: typeof parsed['projectName'] === 'string' ? parsed['projectName'] : `${state.companyName} Project`,
         description: typeof parsed['description'] === 'string' ? parsed['description'] : state.brief,
         requirements: state.requirements,
-        fileManifest: Array.isArray(parsed['fileManifest'])
-          ? (parsed['fileManifest'] as string[])
-          : [],
+        fileManifest: this.normalizeFileManifest(rawFileManifest),
         acceptanceCriteria: Array.isArray(parsed['acceptanceCriteria'])
           ? (parsed['acceptanceCriteria'] as string[])
           : [],
@@ -153,5 +155,35 @@ Produce 5–10 acceptance criteria as clear, testable statements.`,
 
       return { error: `ContractNegotiatorNode failed: ${message}` };
     }
+  }
+
+  private normalizeFileManifest(fileManifest: string[]): string[] {
+    const coreFiles = [
+      'src/app/page.tsx',
+      'src/app/layout.tsx',
+      'src/components/ui/Button.tsx',
+      'src/components/ui/Card.tsx',
+      'src/styles/globals.css',
+      'README-frontend.md',
+      'src/app.module.ts',
+      'src/main.ts',
+      'src/modules/core/core.module.ts',
+      'src/modules/core/core.controller.ts',
+      'src/modules/core/core.service.ts',
+      'src/modules/core/dto/create-item.dto.ts',
+      'README-backend.md',
+      'prisma/schema.prisma',
+      'prisma/migrations/0001_initial.sql',
+      'prisma/seed.ts',
+      'README-database.md',
+      'ARCHITECTURE.md',
+      'API.md',
+      'DEPLOYMENT.md',
+    ];
+    const supportedFile = (filePath: string) =>
+      /\.(tsx|jsx|css|scss|module\.css|module\.ts|controller\.ts|service\.ts|dto\.ts|guard\.ts|pipe\.ts|interceptor\.ts|prisma|sql|md)$/i.test(filePath) ||
+      /seed\.(ts|js)$/i.test(filePath);
+
+    return [...new Set([...coreFiles, ...fileManifest.filter(supportedFile)])].slice(0, 24);
   }
 }

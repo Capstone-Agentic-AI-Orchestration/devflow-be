@@ -52,6 +52,19 @@ export class DatabaseAgentNode {
       const memories = await this.memory.readRelevant('database', memoryQuery);
       const memoryContext = this.memory.formatAsContext(memories);
 
+      // ── 2. Build file list ───────────────────────────────────────────────
+      const dbFiles = state.contract.fileManifest.filter((f) =>
+        /\.(prisma|sql|seed\.(ts|js))$|README-database\.md$/i.test(f),
+      );
+
+      const coreFiles = [
+        'prisma/schema.prisma',
+        'prisma/migrations/0001_initial.sql',
+        'prisma/seed.ts',
+        'README-database.md',
+      ];
+      const allDbFiles = [...new Set([...coreFiles, ...dbFiles])].slice(0, 5);
+
       // ── 2. Skip-generation check ───────────────────────────────────────────
       // Must run AFTER readRelevant so memory context is still available if the
       // skip threshold is not met. Returns immediately — no LLM tokens consumed.
@@ -75,31 +88,22 @@ export class DatabaseAgentNode {
           content: skipCandidate.content,
           language: 'prisma',
         };
-        return { artifacts: [artifact] };
+        return { artifacts: this.completeArtifacts(allDbFiles, [artifact], state) };
       }
 
-      // ── 3. Build file list ─────────────────────────────────────────────────
-      const dbFiles = state.contract.fileManifest.filter((f) =>
-        /\.(prisma|sql|seed\.(ts|js))$|README-database\.md$/i.test(f),
-      );
-
-      const coreFiles = [
-        'prisma/schema.prisma',
-        'prisma/migrations/0001_initial.sql',
-        'prisma/seed.ts',
-        'README-database.md',
-      ];
-      const allDbFiles = [...new Set([...dbFiles, ...coreFiles])].slice(0, 5);
-
       if (process.env.MOCK_MODE === 'true') {
-        const artifacts: GeneratedArtifact[] = [
+        const artifacts = this.completeArtifacts(
+          allDbFiles,
+          [
           {
             agentType: 'database',
             filePath: 'prisma/schema.prisma',
             content: `model User {\n  id Int @id @default(autoincrement())\n}`,
             language: 'prisma'
           }
-        ];
+          ],
+          state,
+        );
         await this.eventLog.logCompleted(state.projectId, 'database_agent', { inputTokens: 0, outputTokens: 0, model: 'mock' });
         return { artifacts };
       }
@@ -134,12 +138,16 @@ Requirements:
         maxTokens: 6144,
       });
 
-      const artifacts: GeneratedArtifact[] = result.value.map((item) => ({
-        agentType: 'database' as const,
-        filePath: item.filePath,
-        content: item.content,
-        language: item.language ?? this.inferLanguage(item.filePath),
-      }));
+      const artifacts = this.completeArtifacts(
+        allDbFiles,
+        result.value.map((item) => ({
+          agentType: 'database' as const,
+          filePath: item.filePath,
+          content: item.content,
+          language: item.language ?? this.inferLanguage(item.filePath),
+        })),
+        state,
+      );
 
       this.logger.log(
         `[${state.projectId}] Database agent generated ${artifacts.length} files (${memories.length} memories injected)`,
@@ -166,5 +174,128 @@ Requirements:
     if (filePath.endsWith('.ts') || filePath.endsWith('.js')) return 'typescript';
     if (filePath.endsWith('.md')) return 'markdown';
     return 'text';
+  }
+
+  private completeArtifacts(
+    requestedFiles: string[],
+    generated: GeneratedArtifact[],
+    state: DevFlowStateType,
+  ): GeneratedArtifact[] {
+    const byPath = new Map(generated.map((artifact) => [artifact.filePath, artifact]));
+
+    return requestedFiles.map((filePath) => {
+      const artifact = byPath.get(filePath);
+      if (artifact?.content?.trim()) return artifact;
+
+      return {
+        agentType: 'database' as const,
+        filePath,
+        content: this.fallbackContent(filePath, state),
+        language: this.inferLanguage(filePath),
+      };
+    });
+  }
+
+  private fallbackContent(filePath: string, state: DevFlowStateType): string {
+    const projectName = state.contract?.projectName ?? state.companyName;
+
+    if (filePath.endsWith('schema.prisma')) {
+      return `generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  name      String?
+  tasks     Task[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Task {
+  id          String   @id @default(cuid())
+  title       String
+  description String?
+  completed   Boolean  @default(false)
+  ownerId     String?
+  owner       User?    @relation(fields: [ownerId], references: [id])
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([ownerId])
+}
+`;
+    }
+
+    if (filePath.endsWith('.sql')) {
+      return `CREATE TABLE users (
+  id TEXT PRIMARY KEY,
+  email TEXT NOT NULL UNIQUE,
+  name TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE tasks (
+  id TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  description TEXT,
+  completed BOOLEAN NOT NULL DEFAULT FALSE,
+  owner_id TEXT REFERENCES users(id),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX tasks_owner_id_idx ON tasks(owner_id);
+`;
+    }
+
+    if (/seed\.(ts|js)$/i.test(filePath)) {
+      return `import { PrismaClient } from '@prisma/client';
+
+const prisma = new PrismaClient();
+
+async function main() {
+  const user = await prisma.user.upsert({
+    where: { email: 'demo@example.com' },
+    update: {},
+    create: { email: 'demo@example.com', name: 'Demo User' },
+  });
+
+  await prisma.task.create({
+    data: {
+      title: 'Review ${projectName}',
+      description: 'Initial generated seed task',
+      ownerId: user.id,
+    },
+  });
+}
+
+main()
+  .finally(async () => {
+    await prisma.$disconnect();
+  });
+`;
+    }
+
+    return `# Database
+
+This database layer was generated for ${projectName}.
+
+## Models
+
+- User stores application users.
+- Task stores assignable work items.
+
+## Operations
+
+Run Prisma migrations, generate the client, and execute the seed script before starting the application.
+`;
   }
 }

@@ -79,6 +79,8 @@ The LangGraph path defines DevFlow's own agents: requirements parser, contract n
 
 GitHub delivery requires `GITHUB_APP_ID`, base64-encoded `GITHUB_PRIVATE_KEY`, `GITHUB_INSTALLATION_ID`, and `GITHUB_ORG`. The orchestration provider endpoint includes `githubDelivery` readiness details so the app can show missing setup before Gate 2 delivery fails.
 
+`npm run smoke:langgraph-github` is safe by default and skips before creating a repository. Set `LANGGRAPH_GITHUB_SMOKE_CREATE=true` only when you intentionally want a real end-to-end smoke repository created through the full LangGraph Gate 1 -> Gate 2 -> GitHub delivery flow.
+
 ## Scripts
 
 ```powershell
@@ -95,6 +97,7 @@ npm run seed:demo:check
 npm run seed:demo:smoke
 npm run smoke:openrouter
 npm run smoke:github
+npm run smoke:langgraph-github
 ```
 
 ## Persona Demo Data

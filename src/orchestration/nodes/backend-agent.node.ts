@@ -52,6 +52,24 @@ export class BackendAgentNode {
       const memories = await this.memory.readRelevant('backend', memoryQuery);
       const memoryContext = this.memory.formatAsContext(memories);
 
+      // ── 2. Build file list ───────────────────────────────────────────────
+      const backendFiles = state.contract.fileManifest.filter((f) =>
+        /\.(module|controller|service|dto|guard|pipe|interceptor)\.ts$|README-backend\.md$/i.test(f),
+      );
+
+      const coreFiles = [
+        'src/app.module.ts',
+        'src/main.ts',
+        'src/modules/core/core.module.ts',
+        'src/modules/core/core.controller.ts',
+        'src/modules/core/core.service.ts',
+        'src/modules/core/dto/create-item.dto.ts',
+        'README-backend.md',
+      ];
+      const allBackendFiles = [
+        ...new Set([...coreFiles, ...backendFiles]),
+      ].slice(0, 8);
+
       // ── 2. Skip-generation check ───────────────────────────────────────────
       // Must run AFTER readRelevant so memory context is still available if the
       // skip threshold is not met. Returns immediately — no LLM tokens consumed.
@@ -75,36 +93,22 @@ export class BackendAgentNode {
           content: skipCandidate.content,
           language: 'typescript',
         };
-        return { artifacts: [artifact] };
+        return { artifacts: this.completeArtifacts(allBackendFiles, [artifact], state) };
       }
 
-      // ── 3. Build file list ─────────────────────────────────────────────────
-      const backendFiles = state.contract.fileManifest.filter((f) =>
-        /\.(module|controller|service|dto|guard|pipe|interceptor)\.ts$|README-backend\.md$/i.test(f),
-      );
-
-      const coreFiles = [
-        'src/app.module.ts',
-        'src/main.ts',
-        'src/modules/core/core.module.ts',
-        'src/modules/core/core.controller.ts',
-        'src/modules/core/core.service.ts',
-        'src/modules/core/dto/create-item.dto.ts',
-        'README-backend.md',
-      ];
-      const allBackendFiles = [
-        ...new Set([...backendFiles, ...coreFiles]),
-      ].slice(0, 8);
-
       if (process.env.MOCK_MODE === 'true') {
-        const artifacts: GeneratedArtifact[] = [
+        const artifacts = this.completeArtifacts(
+          allBackendFiles,
+          [
           {
             agentType: 'backend',
             filePath: 'src/main.ts',
             content: `export function bootstrap() {\n  console.log("Mock Backend Running!");\n}`,
             language: 'typescript'
           }
-        ];
+          ],
+          state,
+        );
         await this.eventLog.logCompleted(state.projectId, 'backend_agent', { inputTokens: 0, outputTokens: 0, model: 'mock' });
         return { artifacts };
       }
@@ -140,12 +144,16 @@ Generate complete NestJS code with:
         maxTokens: 8192,
       });
 
-      const artifacts: GeneratedArtifact[] = result.value.map((item) => ({
-        agentType: 'backend' as const,
-        filePath: item.filePath,
-        content: item.content,
-        language: item.language ?? 'typescript',
-      }));
+      const artifacts = this.completeArtifacts(
+        allBackendFiles,
+        result.value.map((item) => ({
+          agentType: 'backend' as const,
+          filePath: item.filePath,
+          content: item.content,
+          language: item.language ?? this.inferLanguage(item.filePath),
+        })),
+        state,
+      );
 
       this.logger.log(
         `[${state.projectId}] Backend agent generated ${artifacts.length} files (${memories.length} memories injected)`,
@@ -164,5 +172,175 @@ Generate complete NestJS code with:
       this.logger.error(`[${state.projectId}] Backend agent failed: ${message}`);
       return { error: `BackendAgentNode failed: ${message}` };
     }
+  }
+
+  private completeArtifacts(
+    requestedFiles: string[],
+    generated: GeneratedArtifact[],
+    state: DevFlowStateType,
+  ): GeneratedArtifact[] {
+    const byPath = new Map(generated.map((artifact) => [artifact.filePath, artifact]));
+
+    return requestedFiles.map((filePath) => {
+      const artifact = byPath.get(filePath);
+      if (artifact?.content?.trim()) return artifact;
+
+      return {
+        agentType: 'backend' as const,
+        filePath,
+        content: this.fallbackContent(filePath, state),
+        language: this.inferLanguage(filePath),
+      };
+    });
+  }
+
+  private fallbackContent(filePath: string, state: DevFlowStateType): string {
+    const projectName = state.contract?.projectName ?? state.companyName;
+
+    if (filePath === 'src/app.module.ts') {
+      return `import { Module } from '@nestjs/common';
+import { CoreModule } from './modules/core/core.module';
+
+@Module({
+  imports: [CoreModule],
+})
+export class AppModule {}
+`;
+    }
+
+    if (filePath === 'src/main.ts') {
+      return `import { NestFactory } from '@nestjs/core';
+import { AppModule } from './app.module';
+
+async function bootstrap() {
+  const app = await NestFactory.create(AppModule);
+  app.enableCors();
+  await app.listen(process.env.PORT ?? 3000);
+}
+
+void bootstrap();
+`;
+    }
+
+    if (filePath.endsWith('core.module.ts')) {
+      return `import { Module } from '@nestjs/common';
+import { CoreController } from './core.controller';
+import { CoreService } from './core.service';
+
+@Module({
+  controllers: [CoreController],
+  providers: [CoreService],
+})
+export class CoreModule {}
+`;
+    }
+
+    if (filePath.endsWith('core.controller.ts')) {
+      return `import { Body, Controller, Get, Post } from '@nestjs/common';
+import { CoreService } from './core.service';
+import { CreateItemDto } from './dto/create-item.dto';
+
+@Controller('tasks')
+export class CoreController {
+  constructor(private readonly coreService: CoreService) {}
+
+  @Get()
+  findAll() {
+    return this.coreService.findAll();
+  }
+
+  @Post()
+  create(@Body() dto: CreateItemDto) {
+    return this.coreService.create(dto);
+  }
+}
+`;
+    }
+
+    if (filePath.endsWith('core.service.ts')) {
+      return `import { Injectable } from '@nestjs/common';
+import { CreateItemDto } from './dto/create-item.dto';
+
+@Injectable()
+export class CoreService {
+  private readonly tasks = [{ id: 'task-1', title: 'Review generated project', completed: false }];
+
+  findAll() {
+    return this.tasks;
+  }
+
+  create(dto: CreateItemDto) {
+    const task = { id: \`task-\${this.tasks.length + 1}\`, title: dto.title, completed: false };
+    this.tasks.push(task);
+    return task;
+  }
+}
+`;
+    }
+
+    if (filePath.endsWith('.dto.ts')) {
+      return `export class CreateItemDto {
+  title!: string;
+  description?: string;
+}
+`;
+    }
+
+    if (filePath.endsWith('.module.ts')) {
+      return `import { Module } from '@nestjs/common';
+
+@Module({})
+export class GeneratedModule {}
+`;
+    }
+
+    if (filePath.endsWith('.controller.ts')) {
+      return `import { Controller, Get } from '@nestjs/common';
+
+@Controller()
+export class GeneratedController {
+  @Get('health')
+  health() {
+    return { status: 'ok', project: '${projectName}' };
+  }
+}
+`;
+    }
+
+    if (filePath.endsWith('.service.ts')) {
+      return `import { Injectable } from '@nestjs/common';
+
+@Injectable()
+export class GeneratedService {
+  getStatus() {
+    return { status: 'ready', project: '${projectName}' };
+  }
+}
+`;
+    }
+
+    if (filePath.endsWith('.md')) {
+      return `# Backend
+
+This NestJS backend was generated for ${projectName}.
+
+## Endpoints
+
+- \`GET /tasks\` returns generated task data.
+- \`POST /tasks\` creates a task payload.
+
+## Setup
+
+Install dependencies, configure the database URL, and run the NestJS server.
+`;
+    }
+
+    return `export const generatedBackendFile = '${projectName}';
+`;
+  }
+
+  private inferLanguage(filePath: string): string {
+    if (filePath.endsWith('.md')) return 'markdown';
+    return 'typescript';
   }
 }

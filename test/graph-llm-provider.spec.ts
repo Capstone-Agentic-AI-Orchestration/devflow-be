@@ -278,13 +278,21 @@ describe('LangGraph OpenRouter-backed agents', () => {
       },
     } as unknown as DevFlowStateType);
 
-    expect(result.artifacts).toEqual([
+    expect(result.artifacts).toEqual(expect.arrayContaining([
       {
         agentType: 'frontend',
         filePath: 'src/app/page.tsx',
         content: 'export default function Page() { return <section><div>App</div></section>; }',
         language: 'tsx',
       },
+    ]));
+    expect(result.artifacts?.map((artifact) => artifact.filePath)).toEqual([
+      'src/app/page.tsx',
+      'src/app/layout.tsx',
+      'src/components/ui/Button.tsx',
+      'src/components/ui/Card.tsx',
+      'src/styles/globals.css',
+      'README-frontend.md',
     ]);
     expect(graphLlm.generateJson).toHaveBeenCalledWith(expect.objectContaining({
       agentName: 'frontend_agent',
