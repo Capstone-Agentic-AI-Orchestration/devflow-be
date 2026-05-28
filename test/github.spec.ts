@@ -135,6 +135,85 @@ describe('GithubService', () => {
     });
   });
 
+  it('verifies GitHub App installation access before repository creation', async () => {
+    const service = new GithubService(makeConfig({
+      'github.appId': '12345',
+      'github.privateKey': validPrivateKey(),
+      'github.installationId': 67890,
+      'github.org': 'capstone-org',
+    }));
+    service.onModuleInit();
+    const octokit = {
+      apps: {
+        getInstallation: vi.fn().mockResolvedValue({
+          data: {
+            account: { login: 'capstone-org' },
+            permissions: { contents: 'write', administration: 'write' },
+          },
+        }),
+      },
+      request: vi.fn().mockResolvedValue({
+        data: { total_count: 4 },
+      }),
+    };
+    Object.assign(service as unknown as { octokit: unknown }, { octokit });
+
+    await expect(service.verifyDeliveryAccess()).resolves.toEqual({
+      ok: true,
+      status: expect.objectContaining({
+        available: true,
+        owner: 'capstone-org',
+      }),
+      owner: 'capstone-org',
+      installationOwner: 'capstone-org',
+      repositoriesVisible: 4,
+      permissions: { contents: 'write', administration: 'write' },
+      reason: null,
+    });
+    expect(octokit.apps.getInstallation).toHaveBeenCalledWith({
+      installation_id: 67890,
+    });
+    expect(octokit.request).toHaveBeenCalledWith('GET /installation/repositories', {
+      per_page: 1,
+    });
+  });
+
+  it('reports a configured GitHub org that does not match the installation owner', async () => {
+    const service = new GithubService(makeConfig({
+      'github.appId': '12345',
+      'github.privateKey': validPrivateKey(),
+      'github.installationId': 67890,
+      'github.org': 'wrong-org',
+    }));
+    service.onModuleInit();
+    const octokit = {
+      apps: {
+        getInstallation: vi.fn().mockResolvedValue({
+          data: {
+            account: { login: 'capstone-org' },
+            permissions: { contents: 'write' },
+          },
+        }),
+      },
+      request: vi.fn(),
+    };
+    Object.assign(service as unknown as { octokit: unknown }, { octokit });
+
+    await expect(service.verifyDeliveryAccess()).resolves.toEqual({
+      ok: false,
+      status: expect.objectContaining({
+        available: true,
+        owner: 'wrong-org',
+      }),
+      owner: 'wrong-org',
+      installationOwner: 'capstone-org',
+      repositoriesVisible: null,
+      permissions: { contents: 'write' },
+      reason: 'GITHUB_ORG (wrong-org) does not match GitHub App installation owner (capstone-org).',
+    });
+    expect(octokit.request).not.toHaveBeenCalled();
+  });
+
   it('fails predictably when commit automation is not configured', async () => {
     const service = new GithubService(makeConfig({}));
     service.onModuleInit();

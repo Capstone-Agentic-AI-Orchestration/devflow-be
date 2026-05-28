@@ -302,6 +302,12 @@ try {
     process.exit(0);
   }
 
+  const githubVerification = await github.verifyDeliveryAccess();
+  if (!githubVerification.ok) {
+    console.log(`LangGraph GitHub E2E smoke skipped: ${githubVerification.reason}`);
+    process.exit(0);
+  }
+
   const pm = await prisma.profile.findFirst({
     where: { role: UserRole.PM },
     orderBy: { createdAt: 'asc' },

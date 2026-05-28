@@ -14,6 +14,16 @@ export interface GithubDeliveryStatus {
   reason: string | null;
 }
 
+export interface GithubDeliveryVerification {
+  ok: boolean;
+  status: GithubDeliveryStatus;
+  owner: string | null;
+  installationOwner: string | null;
+  repositoriesVisible: number | null;
+  permissions: Record<string, string> | null;
+  reason: string | null;
+}
+
 const CI_WORKFLOW_CONTENT = `name: CI
 
 on:
@@ -131,6 +141,74 @@ export class GithubService implements OnModuleInit {
     });
     this.logger.log(`Repository created: ${data.clone_url}`);
     return data.clone_url;
+  }
+
+  async verifyDeliveryAccess(): Promise<GithubDeliveryVerification> {
+    const status = this.getDeliveryStatus();
+    if (!status.available) {
+      return {
+        ok: false,
+        status,
+        owner: status.owner,
+        installationOwner: null,
+        repositoriesVisible: null,
+        permissions: null,
+        reason: status.reason,
+      };
+    }
+
+    try {
+      const { data: installation } = await this.octokit.apps.getInstallation({
+        installation_id: this.installationId,
+      });
+      const installationOwner =
+        installation.account && 'login' in installation.account
+          ? installation.account.login
+          : null;
+
+      if (this.ownerLogin && installationOwner && this.ownerLogin !== installationOwner) {
+        return {
+          ok: false,
+          status,
+          owner: this.ownerLogin,
+          installationOwner,
+          repositoriesVisible: null,
+          permissions: installation.permissions ?? null,
+          reason: `GITHUB_ORG (${this.ownerLogin}) does not match GitHub App installation owner (${installationOwner}).`,
+        };
+      }
+
+      if (!this.ownerLogin && installationOwner) {
+        this.ownerLogin = installationOwner;
+        this.ownerSource = 'installation';
+      }
+
+      const { data: repositories } = await this.octokit.request(
+        'GET /installation/repositories',
+        { per_page: 1 },
+      );
+
+      return {
+        ok: true,
+        status: this.getDeliveryStatus(),
+        owner: this.ownerLogin || installationOwner,
+        installationOwner,
+        repositoriesVisible: repositories.total_count ?? null,
+        permissions: installation.permissions ?? null,
+        reason: null,
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return {
+        ok: false,
+        status,
+        owner: status.owner,
+        installationOwner: null,
+        repositoriesVisible: null,
+        permissions: null,
+        reason: `GitHub App installation verification failed: ${message}`,
+      };
+    }
   }
 
   async commitFiles(

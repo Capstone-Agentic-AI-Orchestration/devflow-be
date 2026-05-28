@@ -47,8 +47,22 @@ try {
     },
   ]);
 
+  const verification = await github.verifyDeliveryAccess();
+  if (!verification.ok) {
+    console.log(`GitHub delivery smoke skipped: ${verification.reason}`);
+    process.exit(0);
+  }
+
+  console.table([
+    {
+      owner: verification.owner,
+      installationOwner: verification.installationOwner,
+      repositoriesVisible: verification.repositoriesVisible,
+    },
+  ]);
+
   if (process.env.GITHUB_SMOKE_CREATE !== 'true') {
-    console.log('GitHub delivery smoke skipped: set GITHUB_SMOKE_CREATE=true to create a real smoke repository.');
+    console.log('GitHub delivery smoke verified credentials. Set GITHUB_SMOKE_CREATE=true to create a real smoke repository.');
     process.exit(0);
   }
 
