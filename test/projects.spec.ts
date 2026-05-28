@@ -137,6 +137,22 @@ function makeOrchestrationMock() {
         reason: 'GitHub delivery requires GITHUB_ORG.',
       },
     }),
+    verifyGithubDeliveryAccess: vi.fn().mockResolvedValue({
+      ok: true,
+      status: {
+        configured: true,
+        available: true,
+        owner: 'capstone-org',
+        ownerSource: 'env',
+        missingRequirements: [],
+        reason: null,
+      },
+      owner: 'capstone-org',
+      installationOwner: 'capstone-org',
+      repositoriesVisible: 4,
+      permissions: { contents: 'write' },
+      reason: null,
+    }),
     executeWorkOrder: vi.fn().mockResolvedValue({
       executionRunId: 'work-order-run-1',
       artifactId: 'artifact-generated-1',
@@ -256,6 +272,19 @@ describe('ProjectsService', () => {
       service.startOrchestration('project-1', pmUser),
     ).rejects.toBeInstanceOf(BadRequestException);
     expect(orchestration.startRun).not.toHaveBeenCalled();
+  });
+
+  it('verifyOrchestrationGithubDelivery checks project access before live GitHub verification', async () => {
+    prisma.project.findFirst.mockResolvedValue({ id: 'project-1' });
+
+    await expect(service.verifyOrchestrationGithubDelivery('project-1', pmUser)).resolves.toEqual(
+      expect.objectContaining({
+        ok: true,
+        owner: 'capstone-org',
+        installationOwner: 'capstone-org',
+      }),
+    );
+    expect(orchestration.verifyGithubDeliveryAccess).toHaveBeenCalled();
   });
 
   it('updateKickoff marks the project ready when every checklist item is complete', async () => {

@@ -512,6 +512,11 @@ export class ProjectsService {
     return this.orchestration.getProviderStatus();
   }
 
+  async verifyOrchestrationGithubDelivery(id: string, user: AuthUser) {
+    await this.assertAccessible(id, user);
+    return this.orchestration.verifyGithubDeliveryAccess();
+  }
+
   async findAll(user: AuthUser): Promise<ProjectListItem[]> {
     const projects = await this.prisma.project.findMany({
       where: this.projectAccessWhere(user),

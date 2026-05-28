@@ -23,7 +23,11 @@ import { GithubCommitNode } from './nodes/github-commit.node';
 import { MemoryService } from '../memory/memory.service';
 import { DevFlowGateway } from '../gateway/devflow.gateway';
 import { NotificationsService } from '../notifications/notifications.service';
-import { GithubDeliveryStatus, GithubService } from '../github/github.service';
+import {
+  GithubDeliveryStatus,
+  GithubDeliveryVerification,
+  GithubService,
+} from '../github/github.service';
 import { AgentProviderRegistry } from './providers/agent-provider.registry';
 import { ArtifactContractValidator } from './providers/artifact-contract.validator';
 import { AgentProviderMode, AgentProviderStatus } from './providers/agent-provider.types';
@@ -196,6 +200,10 @@ export class OrchestrationService implements OnModuleInit {
       ...this.agentProviderRegistry.getStatus(),
       githubDelivery: this.github.getDeliveryStatus(),
     };
+  }
+
+  verifyGithubDeliveryAccess(): Promise<GithubDeliveryVerification> {
+    return this.github.verifyDeliveryAccess();
   }
 
   async onModuleInit(): Promise<void> {

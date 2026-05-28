@@ -394,6 +394,13 @@ export class ProjectsController {
     return this.projectsService.findOrchestrationProviderStatus(id, user);
   }
 
+  @Post(':id/orchestration/github-delivery/verify')
+  @Roles(UserRole.PM, UserRole.ADMIN)
+  @HttpCode(HttpStatus.OK)
+  verifyOrchestrationGithubDelivery(@Param('id') id: string, @CurrentUser() user: AuthUser) {
+    return this.projectsService.verifyOrchestrationGithubDelivery(id, user);
+  }
+
   @Post(':id/orchestration/rerun-ready')
   @Roles(UserRole.PM, UserRole.ADMIN)
   @HttpCode(HttpStatus.ACCEPTED)
