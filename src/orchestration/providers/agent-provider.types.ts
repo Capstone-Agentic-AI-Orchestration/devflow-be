@@ -51,6 +51,9 @@ export interface AgentProviderCapability {
   implemented: boolean;
   missingRequirements: string[];
   reason: string | null;
+  provider?: string;
+  model?: string;
+  fallbackModel?: string | null;
 }
 
 export interface AgentProviderStatus {
@@ -60,5 +63,8 @@ export interface AgentProviderStatus {
   fallbackMode: AgentProviderMode | null;
   missingRequirements: string[];
   reason: string | null;
+  provider?: string;
+  model?: string;
+  fallbackModel?: string | null;
   providers: AgentProviderCapability[];
 }

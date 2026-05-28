@@ -49,6 +49,11 @@ Common optional values:
 
 ```env
 AGENT_PROVIDER="mock"
+LLM_PROVIDER="openrouter"
+OPENROUTER_API_KEY=""
+OPENROUTER_BASE_URL="https://openrouter.ai/api/v1"
+OPENROUTER_MODEL="deepseek/deepseek-v4-flash:free"
+OPENROUTER_FALLBACK_MODEL=""
 PORT=4000
 NODE_ENV="development"
 CORS_ORIGIN="http://localhost:3000"
@@ -66,7 +71,7 @@ LANGCHAIN_PROJECT="devflow"
 
 `SUPABASE_SERVICE_ROLE_KEY` is server-side only. Never expose it to `devlow-frontend`.
 
-`AGENT_PROVIDER=mock` runs the deterministic local orchestration provider and does not require OpenAI, Anthropic, or GitHub credentials. Use `AGENT_PROVIDER=llm` only when those credentials are configured.
+`AGENT_PROVIDER=mock` runs the deterministic local orchestration provider and does not require LLM or GitHub credentials. Use `AGENT_PROVIDER=llm` with `LLM_PROVIDER=openrouter` and `OPENROUTER_API_KEY` to run real work-order artifact generation through OpenRouter. The default real model is `deepseek/deepseek-v4-flash:free`; set `OPENROUTER_FALLBACK_MODEL` if you want an optional fallback model.
 
 ## Scripts
 
@@ -82,6 +87,7 @@ npm run auth:set-role
 npm run seed:demo
 npm run seed:demo:check
 npm run seed:demo:smoke
+npm run smoke:openrouter
 ```
 
 ## Persona Demo Data
@@ -175,6 +181,7 @@ npm run build
 npm run seed:demo
 npm run seed:demo:check
 npm run seed:demo:smoke
+npm run smoke:openrouter  # skips when OPENROUTER_API_KEY is absent
 
 cd ..\devlow-frontend
 npm run typecheck

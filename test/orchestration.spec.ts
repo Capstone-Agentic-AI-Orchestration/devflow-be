@@ -17,7 +17,7 @@ import { LlmAgentProvider } from '../src/orchestration/providers/llm-agent.provi
 import { MockAgentProvider } from '../src/orchestration/providers/mock-agent.provider';
 import { NotificationsService } from '../src/notifications/notifications.service';
 import type { RequirementsDocument, ProjectContract, GeneratedArtifact } from '../src/orchestration/graph/devflow.state';
-import { ArtifactValidationStatus, ArtifactReviewStatus, OrchestrationRunStatus, OrchestrationRunTrigger, ProjectStatus, ProjectTaskStatus, WorkOrderAgentType, WorkOrderPriority, WorkOrderStatus } from '@prisma/client';
+import { ArtifactValidationStatus, ArtifactReviewStatus, OrchestrationRunStatus, OrchestrationRunTrigger, ProjectStatus, ProjectTaskStatus, WorkOrderAgentType, WorkOrderExecutionStatus, WorkOrderPriority, WorkOrderStatus } from '@prisma/client';
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -153,14 +153,29 @@ describe('OrchestrationService', () => {
   let agentProviderRegistry: AgentProviderRegistry;
   let notifications: ReturnType<typeof makeNotificationsMock>;
   let originalAgentProvider: string | undefined;
+  let originalLlmProvider: string | undefined;
+  let originalOpenRouterApiKey: string | undefined;
+  let originalOpenRouterModel: string | undefined;
+  let originalOpenRouterBaseUrl: string | undefined;
+  let originalOpenRouterFallbackModel: string | undefined;
   let originalAnthropicApiKey: string | undefined;
   let originalOpenAiApiKey: string | undefined;
 
   beforeEach(() => {
     originalAgentProvider = process.env.AGENT_PROVIDER;
+    originalLlmProvider = process.env.LLM_PROVIDER;
+    originalOpenRouterApiKey = process.env.OPENROUTER_API_KEY;
+    originalOpenRouterModel = process.env.OPENROUTER_MODEL;
+    originalOpenRouterBaseUrl = process.env.OPENROUTER_BASE_URL;
+    originalOpenRouterFallbackModel = process.env.OPENROUTER_FALLBACK_MODEL;
     originalAnthropicApiKey = process.env.ANTHROPIC_API_KEY;
     originalOpenAiApiKey = process.env.OPENAI_API_KEY;
     process.env.AGENT_PROVIDER = 'mock';
+    process.env.LLM_PROVIDER = 'openrouter';
+    process.env.OPENROUTER_MODEL = 'deepseek/deepseek-v4-flash:free';
+    process.env.OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
+    delete process.env.OPENROUTER_API_KEY;
+    delete process.env.OPENROUTER_FALLBACK_MODEL;
     delete process.env.ANTHROPIC_API_KEY;
     delete process.env.OPENAI_API_KEY;
 
@@ -231,10 +246,36 @@ describe('OrchestrationService', () => {
   });
 
   afterEach(() => {
+    vi.unstubAllGlobals();
     if (originalAgentProvider === undefined) {
       delete process.env.AGENT_PROVIDER;
     } else {
       process.env.AGENT_PROVIDER = originalAgentProvider;
+    }
+    if (originalLlmProvider === undefined) {
+      delete process.env.LLM_PROVIDER;
+    } else {
+      process.env.LLM_PROVIDER = originalLlmProvider;
+    }
+    if (originalOpenRouterApiKey === undefined) {
+      delete process.env.OPENROUTER_API_KEY;
+    } else {
+      process.env.OPENROUTER_API_KEY = originalOpenRouterApiKey;
+    }
+    if (originalOpenRouterModel === undefined) {
+      delete process.env.OPENROUTER_MODEL;
+    } else {
+      process.env.OPENROUTER_MODEL = originalOpenRouterModel;
+    }
+    if (originalOpenRouterBaseUrl === undefined) {
+      delete process.env.OPENROUTER_BASE_URL;
+    } else {
+      process.env.OPENROUTER_BASE_URL = originalOpenRouterBaseUrl;
+    }
+    if (originalOpenRouterFallbackModel === undefined) {
+      delete process.env.OPENROUTER_FALLBACK_MODEL;
+    } else {
+      process.env.OPENROUTER_FALLBACK_MODEL = originalOpenRouterFallbackModel;
     }
     if (originalAnthropicApiKey === undefined) {
       delete process.env.ANTHROPIC_API_KEY;
@@ -375,15 +416,16 @@ describe('OrchestrationService', () => {
         mode: 'llm',
         active: false,
         available: false,
-        implemented: false,
+        implemented: true,
+        provider: 'openrouter',
+        model: 'deepseek/deepseek-v4-flash:free',
       }),
     ]));
   });
 
-  it('getProviderStatus reports requested LLM mode unavailable without API keys', () => {
+  it('getProviderStatus reports requested OpenRouter mode unavailable without API key', () => {
     process.env.AGENT_PROVIDER = 'llm';
-    delete process.env.ANTHROPIC_API_KEY;
-    delete process.env.OPENAI_API_KEY;
+    delete process.env.OPENROUTER_API_KEY;
 
     const status = service.getProviderStatus();
 
@@ -392,9 +434,31 @@ describe('OrchestrationService', () => {
       activeMode: 'llm',
       available: false,
       fallbackMode: 'mock',
-      missingRequirements: ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY'],
+      missingRequirements: ['OPENROUTER_API_KEY'],
+      provider: 'openrouter',
+      model: 'deepseek/deepseek-v4-flash:free',
     }));
-    expect(status.reason).toContain('LLM provider requires');
+    expect(status.reason).toContain('OpenRouter provider requires');
+  });
+
+  it('getProviderStatus reports OpenRouter as available when a key is configured', () => {
+    process.env.AGENT_PROVIDER = 'llm';
+    process.env.OPENROUTER_API_KEY = 'test-openrouter-key';
+    process.env.OPENROUTER_FALLBACK_MODEL = 'deepseek/deepseek-v4-flash';
+
+    const status = service.getProviderStatus();
+
+    expect(status).toEqual(expect.objectContaining({
+      requestedMode: 'llm',
+      activeMode: 'llm',
+      available: true,
+      fallbackMode: null,
+      missingRequirements: [],
+      reason: null,
+      provider: 'openrouter',
+      model: 'deepseek/deepseek-v4-flash:free',
+      fallbackModel: 'deepseek/deepseek-v4-flash',
+    }));
   });
 
   it('executeWorkOrder records execution logs, creates an artifact, and links it back to work order and task', async () => {
@@ -613,8 +677,7 @@ describe('OrchestrationService', () => {
 
   it('executeWorkOrder fails predictably when LLM mode is requested without provider keys', async () => {
     process.env.AGENT_PROVIDER = 'llm';
-    delete process.env.ANTHROPIC_API_KEY;
-    delete process.env.OPENAI_API_KEY;
+    delete process.env.OPENROUTER_API_KEY;
     prisma.workOrder.findFirst.mockResolvedValue({
       id: 'work-order-1',
       projectId: 'test-project-id',
@@ -647,12 +710,173 @@ describe('OrchestrationService', () => {
 
     await expect(
       service.executeWorkOrder('test-project-id', 'work-order-1', 'pm-1'),
-    ).rejects.toThrow('Agent provider llm is unavailable');
+    ).rejects.toThrow('Agent provider llm is unavailable: OpenRouter provider requires OPENROUTER_API_KEY');
 
     expect(prisma.orchestrationRun.create).not.toHaveBeenCalled();
     expect(prisma.workOrderExecution.create).not.toHaveBeenCalled();
     expect(prisma.workOrder.update).not.toHaveBeenCalled();
     expect(prisma.artifact.create).not.toHaveBeenCalled();
+  });
+
+  it('executeWorkOrder can generate a validated artifact through OpenRouter JSON output', async () => {
+    process.env.AGENT_PROVIDER = 'llm';
+    process.env.OPENROUTER_API_KEY = 'test-openrouter-key';
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                filePath: 'work-orders/work-order-1/frontend-output.tsx',
+                displayName: 'OpenRouter frontend output',
+                language: 'typescript',
+                content: [
+                  "import React from 'react';",
+                  'export function OpenRouterFrontendOutput() {',
+                  '  return <section><div>Recovered frontend work order output</div></section>;',
+                  '}',
+                  'export default OpenRouterFrontendOutput;',
+                ].join('\n'),
+                metadata: { source: 'openrouter-test' },
+              }),
+            },
+          },
+        ],
+      }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    prisma.workOrder.findFirst.mockResolvedValue({
+      id: 'work-order-1',
+      projectId: 'test-project-id',
+      taskId: 'task-1',
+      artifactId: null,
+      title: 'Build frontend shell',
+      instructions: 'Create the first dashboard shell.',
+      agentType: WorkOrderAgentType.FRONTEND,
+      priority: WorkOrderPriority.HIGH,
+      status: WorkOrderStatus.READY,
+      executionAttempt: 0,
+      executionRunId: null,
+      executionStartedAt: null,
+      dispatchedAt: null,
+      project: {
+        id: 'test-project-id',
+        companyName: 'TestCo',
+        brief: 'Build a shop',
+        stackKey: 'nextjs-nestjs',
+      },
+      task: {
+        id: 'task-1',
+        title: 'Frontend dashboard',
+        description: 'Client dashboard task.',
+        assignedToId: 'dev-1',
+        status: ProjectTaskStatus.TODO,
+      },
+      artifact: null,
+    });
+    prisma.artifact.create.mockResolvedValue({
+      id: 'artifact-openrouter-1',
+      projectId: 'test-project-id',
+      agentType: 'frontend',
+      filePath: 'work-orders/work-order-1/frontend-output.tsx',
+      displayName: 'OpenRouter frontend output',
+      reviewStatus: ArtifactReviewStatus.PENDING,
+    });
+
+    const result = await service.executeWorkOrder('test-project-id', 'work-order-1', 'pm-1');
+
+    expect(result.artifactId).toBe('artifact-openrouter-1');
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://openrouter.ai/api/v1/chat/completions',
+      expect.objectContaining({
+        method: 'POST',
+        headers: expect.objectContaining({
+          Authorization: 'Bearer test-openrouter-key',
+          'Content-Type': 'application/json',
+        }),
+      }),
+    );
+    const request = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(request).toEqual(expect.objectContaining({
+      model: 'deepseek/deepseek-v4-flash:free',
+      response_format: { type: 'json_object' },
+    }));
+    expect(prisma.artifact.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        filePath: 'work-orders/work-order-1/frontend-output.tsx',
+        displayName: 'OpenRouter frontend output',
+        validationStatus: ArtifactValidationStatus.PASSED,
+      }),
+    });
+    expect(prisma.workOrderExecution.update).toHaveBeenCalledWith({
+      where: { executionRunId: expect.any(String) },
+      data: expect.objectContaining({
+        status: WorkOrderExecutionStatus.SUCCEEDED,
+        metadata: expect.objectContaining({
+          providerMode: 'llm',
+          output: expect.objectContaining({
+            metadata: expect.objectContaining({
+              provider: 'openrouter',
+              model: 'deepseek/deepseek-v4-flash:free',
+            }),
+          }),
+        }),
+      }),
+    });
+  });
+
+  it('executeWorkOrder fails cleanly when OpenRouter returns invalid JSON', async () => {
+    process.env.AGENT_PROVIDER = 'llm';
+    process.env.OPENROUTER_API_KEY = 'test-openrouter-key';
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({
+        choices: [{ message: { content: 'not json' } }],
+      }),
+    }));
+    prisma.workOrder.findFirst.mockResolvedValue({
+      id: 'work-order-1',
+      projectId: 'test-project-id',
+      taskId: 'task-1',
+      artifactId: null,
+      title: 'Build frontend shell',
+      instructions: 'Create the first dashboard shell.',
+      agentType: WorkOrderAgentType.FRONTEND,
+      priority: WorkOrderPriority.HIGH,
+      status: WorkOrderStatus.READY,
+      executionAttempt: 0,
+      executionRunId: null,
+      executionStartedAt: null,
+      dispatchedAt: null,
+      project: {
+        id: 'test-project-id',
+        companyName: 'TestCo',
+        brief: 'Build a shop',
+        stackKey: 'nextjs-nestjs',
+      },
+      task: {
+        id: 'task-1',
+        title: 'Frontend dashboard',
+        description: 'Client dashboard task.',
+        assignedToId: 'dev-1',
+        status: ProjectTaskStatus.TODO,
+      },
+      artifact: null,
+    });
+
+    await expect(
+      service.executeWorkOrder('test-project-id', 'work-order-1', 'pm-1'),
+    ).rejects.toThrow('OpenRouter deepseek/deepseek-v4-flash:free returned invalid JSON');
+
+    expect(prisma.artifact.create).not.toHaveBeenCalled();
+    expect(prisma.workOrder.update).toHaveBeenCalledWith({
+      where: { id: 'work-order-1' },
+      data: expect.objectContaining({
+        status: WorkOrderStatus.FAILED,
+        executionError: expect.stringContaining('OpenRouter deepseek/deepseek-v4-flash:free returned invalid JSON'),
+      }),
+    });
   });
 
   it('recoverStaleProject creates a durable supervisor recovery run and executes ready work orders', async () => {
@@ -763,8 +987,7 @@ describe('OrchestrationService', () => {
 
   it('recoverStaleProject records a failed recovery run when the requested provider is unavailable', async () => {
     process.env.AGENT_PROVIDER = 'llm';
-    delete process.env.ANTHROPIC_API_KEY;
-    delete process.env.OPENAI_API_KEY;
+    delete process.env.OPENROUTER_API_KEY;
     prisma.workOrder.findMany.mockResolvedValue([
       { id: 'work-order-1', instructions: 'Recover this frontend handoff.' },
     ]);
@@ -810,7 +1033,7 @@ describe('OrchestrationService', () => {
       completedWorkOrders: 0,
       failedWorkOrders: 1,
       status: OrchestrationRunStatus.FAILED,
-      error: expect.stringContaining('Agent provider llm is unavailable'),
+      error: expect.stringContaining('Agent provider llm is unavailable: OpenRouter provider requires OPENROUTER_API_KEY'),
     });
     expect(prisma.orchestrationRun.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
@@ -826,7 +1049,7 @@ describe('OrchestrationService', () => {
       data: expect.objectContaining({
         status: OrchestrationRunStatus.FAILED,
         currentNode: 'supervisor_recovery',
-        error: expect.stringContaining('Agent provider llm is unavailable'),
+        error: expect.stringContaining('Agent provider llm is unavailable: OpenRouter provider requires OPENROUTER_API_KEY'),
         completedWorkOrders: 0,
         failedWorkOrders: 1,
         completedArtifacts: 0,
@@ -839,7 +1062,7 @@ describe('OrchestrationService', () => {
     expect(notifications.notify).toHaveBeenCalledWith(expect.objectContaining({
       projectId: 'test-project-id',
       title: 'Supervisor recovery failed',
-      body: expect.stringContaining('Agent provider llm is unavailable'),
+      body: expect.stringContaining('Agent provider llm is unavailable: OpenRouter provider requires OPENROUTER_API_KEY'),
     }));
   });
 

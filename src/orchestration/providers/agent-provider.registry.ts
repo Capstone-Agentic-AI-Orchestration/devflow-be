@@ -16,10 +16,9 @@ export class AgentProviderRegistry {
 
   getStatus(): AgentProviderStatus {
     const requestedMode = this.requestedMode();
-    const llmMissingRequirements = this.llmMissingRequirements();
-    const llmReason = llmMissingRequirements.length > 0
-      ? `LLM provider requires ${llmMissingRequirements.join(' or ')}.`
-      : 'LLM provider adapter is not implemented yet.';
+    const llmMissingRequirements = this.llmAgentProvider.missingRequirements();
+    const llmAvailable = this.llmAgentProvider.isAvailable();
+    const llmReason = this.llmAgentProvider.unavailableReason();
     const providers = [
       {
         mode: this.mockAgentProvider.mode,
@@ -32,12 +31,15 @@ export class AgentProviderRegistry {
       },
       {
         mode: this.llmAgentProvider.mode,
-        displayName: 'LLM Agent Provider',
+        displayName: 'OpenRouter LLM Provider',
         active: requestedMode === this.llmAgentProvider.mode,
-        available: false,
-        implemented: false,
+        available: llmAvailable,
+        implemented: true,
         missingRequirements: llmMissingRequirements,
         reason: llmReason,
+        provider: this.llmAgentProvider.providerName(),
+        model: this.llmAgentProvider.model(),
+        fallbackModel: this.llmAgentProvider.fallbackModel(),
       },
     ];
     const activeProvider = providers.find((provider) => provider.active) ?? providers[0];
@@ -49,6 +51,9 @@ export class AgentProviderRegistry {
       fallbackMode: activeProvider.available ? null : this.mockAgentProvider.mode,
       missingRequirements: activeProvider.missingRequirements,
       reason: activeProvider.reason,
+      provider: activeProvider.provider,
+      model: activeProvider.model,
+      fallbackModel: activeProvider.fallbackModel,
       providers,
     };
   }
@@ -72,11 +77,5 @@ export class AgentProviderRegistry {
 
   activeMode(): AgentProviderMode {
     return this.getStatus().activeMode;
-  }
-
-  private llmMissingRequirements(): string[] {
-    return process.env.ANTHROPIC_API_KEY || process.env.OPENAI_API_KEY
-      ? []
-      : ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY'];
   }
 }

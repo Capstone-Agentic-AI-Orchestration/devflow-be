@@ -29,6 +29,13 @@ export default () => {
     },
     orchestration: {
       agentProvider: env.data.AGENT_PROVIDER,
+      llmProvider: env.data.LLM_PROVIDER,
+      openrouter: {
+        apiKey: env.data.OPENROUTER_API_KEY,
+        baseUrl: env.data.OPENROUTER_BASE_URL,
+        model: env.data.OPENROUTER_MODEL,
+        fallbackModel: env.data.OPENROUTER_FALLBACK_MODEL || undefined,
+      },
     },
     supabase: {
       url: env.data.SUPABASE_URL,
