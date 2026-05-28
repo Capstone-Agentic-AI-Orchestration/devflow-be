@@ -1,8 +1,8 @@
 import { Injectable, Logger } from '@nestjs/common';
-import Anthropic from '@anthropic-ai/sdk';
 import { DevFlowStateType, GeneratedArtifact } from '../graph/devflow.state';
 import { MemoryService } from '../../memory/memory.service';
 import { EventLogService } from '../../supervisor/event-log.service';
+import { GraphLlmProvider } from '../providers/graph-llm.provider';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -17,11 +17,11 @@ Each element: { "filePath": string, "content": string, "language": string }`;
 @Injectable()
 export class FrontendAgentNode {
   private readonly logger = new Logger(FrontendAgentNode.name);
-  private readonly anthropic = new Anthropic();
 
   constructor(
     private readonly memory: MemoryService,
     private readonly eventLog: EventLogService,
+    private readonly graphLlm: GraphLlmProvider,
   ) {}
 
   async execute(
@@ -109,17 +109,17 @@ export class FrontendAgentNode {
         return { artifacts };
       }
 
-      // ── 4. LLM call with prompt caching ───────────────────────────────────
-      const response = await this.anthropic.messages.create({
-        model: 'claude-haiku-4-5',
-        max_tokens: 8192,
-        system: memoryContext
+      // ── 4. LLM call ───────────────────────────────────────────────────────
+      const result = await this.graphLlm.generateJson<Array<{
+        filePath: string;
+        content: string;
+        language?: string;
+      }>>({
+        agentName: 'frontend_agent',
+        systemPrompt: memoryContext
           ? `${SYSTEM_PROMPT}\n\nRelevant memory:\n${memoryContext}`
           : SYSTEM_PROMPT,
-        messages: [
-          {
-            role: 'user',
-            content: `Generate frontend files for this project:
+        userPrompt: `Generate frontend files for this project:
 
 Project: ${state.contract.projectName}
 Description: ${state.contract.description}
@@ -131,28 +131,11 @@ Files to generate:
 ${allFrontendFiles.map((f) => `- ${f}`).join('\n')}
 
 Generate complete, production-quality code for each file. For README-frontend.md, include setup instructions, architecture overview, and component documentation.`,
-          },
-        ],
+        expectedShape: 'array',
+        maxTokens: 8192,
       });
 
-      // ── 5. Parse ───────────────────────────────────────────────────────────
-      const rawContent = response.content[0];
-      if (rawContent.type !== 'text') {
-        throw new Error('Unexpected response type from Anthropic API');
-      }
-
-      const jsonText = rawContent.text
-        .replace(/^```(?:json)?\s*/i, '')
-        .replace(/\s*```\s*$/, '')
-        .trim();
-
-      const parsed = JSON.parse(jsonText) as Array<{
-        filePath: string;
-        content: string;
-        language: string;
-      }>;
-
-      const artifacts: GeneratedArtifact[] = parsed.map((item) => ({
+      const artifacts: GeneratedArtifact[] = result.value.map((item) => ({
         agentType: 'frontend' as const,
         filePath: item.filePath,
         content: item.content,
@@ -164,11 +147,10 @@ Generate complete, production-quality code for each file. For README-frontend.md
       );
 
       // Log COMPLETED with cost metadata — budget is updated atomically inside.
-      const usage = response.usage;
       await this.eventLog.logCompleted(state.projectId, 'frontend_agent', {
-        inputTokens: usage.input_tokens,
-        outputTokens: usage.output_tokens,
-        model: 'claude-haiku-4-5',
+        inputTokens: result.usage.inputTokens,
+        outputTokens: result.usage.outputTokens,
+        model: result.model,
       });
 
       return { artifacts };

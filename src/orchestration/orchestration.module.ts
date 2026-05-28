@@ -15,6 +15,7 @@ import { ValidatorNode } from './nodes/validator.node';
 import { GithubCommitNode } from './nodes/github-commit.node';
 import { AgentProviderRegistry } from './providers/agent-provider.registry';
 import { ArtifactContractValidator } from './providers/artifact-contract.validator';
+import { GraphLlmProvider } from './providers/graph-llm.provider';
 import { LlmAgentProvider } from './providers/llm-agent.provider';
 import { MockAgentProvider } from './providers/mock-agent.provider';
 
@@ -42,6 +43,7 @@ import { MockAgentProvider } from './providers/mock-agent.provider';
     GithubCommitNode,
     AgentProviderRegistry,
     ArtifactContractValidator,
+    GraphLlmProvider,
     LlmAgentProvider,
     MockAgentProvider,
   ],

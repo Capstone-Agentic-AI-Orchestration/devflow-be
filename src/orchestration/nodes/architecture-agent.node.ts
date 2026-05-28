@@ -1,20 +1,10 @@
 import { Injectable, Logger } from '@nestjs/common';
-import Anthropic from '@anthropic-ai/sdk';
 import { DevFlowStateType, GeneratedArtifact } from '../graph/devflow.state';
 import { MemoryService } from '../../memory/memory.service';
 import { EventLogService } from '../../supervisor/event-log.service';
+import { GraphLlmProvider } from '../providers/graph-llm.provider';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
-
-/**
- * Architecture agent uses claude-sonnet-4-6 (Phase 2D model tiering decision).
- * Rationale: ARCHITECTURE.md, API.md, and DEPLOYMENT.md are the primary
- * deliverables reviewed by capstone panel evaluators. Higher reasoning quality
- * produces more accurate Mermaid diagrams, OpenAPI schemas, and deployment
- * runbooks. Code generation nodes (frontend/backend/database) stay on haiku
- * because their outputs are validated structurally, not by human judgment.
- */
-const ARCHITECTURE_MODEL = 'claude-sonnet-4-6';
 
 const SYSTEM_PROMPT = `You are a senior software architect generating comprehensive documentation.
 Respond ONLY with a JSON array — no prose, no markdown fences.
@@ -26,11 +16,11 @@ Each element: { "filePath": string, "content": string, "language": string }`;
 @Injectable()
 export class ArchitectureAgentNode {
   private readonly logger = new Logger(ArchitectureAgentNode.name);
-  private readonly anthropic = new Anthropic();
 
   constructor(
     private readonly memory: MemoryService,
     private readonly eventLog: EventLogService,
+    private readonly graphLlm: GraphLlmProvider,
   ) {}
 
   async execute(
@@ -105,17 +95,17 @@ export class ArchitectureAgentNode {
         return { artifacts };
       }
 
-      // ── 4. LLM call with prompt caching ───────────────────────────────────
-      const response = await this.anthropic.messages.create({
-        model: ARCHITECTURE_MODEL,
-        max_tokens: 6144,
-        system: memoryContext
+      // ── 4. LLM call ───────────────────────────────────────────────────────
+      const result = await this.graphLlm.generateJson<Array<{
+        filePath: string;
+        content: string;
+        language?: string;
+      }>>({
+        agentName: 'architecture_agent',
+        systemPrompt: memoryContext
           ? `${SYSTEM_PROMPT}\n\nRelevant memory:\n${memoryContext}`
           : SYSTEM_PROMPT,
-        messages: [
-          {
-            role: 'user',
-            content: `Generate architecture documentation for this project:
+        userPrompt: `Generate architecture documentation for this project:
 
 Project: ${state.contract.projectName}
 Description: ${state.contract.description}
@@ -146,28 +136,11 @@ Generate these 3 documentation files:
    - Docker setup instructions
    - Production deployment checklist
    - Health check endpoints`,
-          },
-        ],
+        expectedShape: 'array',
+        maxTokens: 6144,
       });
 
-      // ── 5. Parse ───────────────────────────────────────────────────────────
-      const rawContent = response.content[0];
-      if (rawContent.type !== 'text') {
-        throw new Error('Unexpected response type from Anthropic API');
-      }
-
-      const jsonText = rawContent.text
-        .replace(/^```(?:json)?\s*/i, '')
-        .replace(/\s*```\s*$/, '')
-        .trim();
-
-      const parsed = JSON.parse(jsonText) as Array<{
-        filePath: string;
-        content: string;
-        language: string;
-      }>;
-
-      const artifacts: GeneratedArtifact[] = parsed.map((item) => ({
+      const artifacts: GeneratedArtifact[] = result.value.map((item) => ({
         agentType: 'architecture' as const,
         filePath: item.filePath,
         content: item.content,
@@ -179,11 +152,10 @@ Generate these 3 documentation files:
       );
 
       // Log COMPLETED — model field drives cost attribution in RunSupervisorService.
-      const usage = response.usage;
       await this.eventLog.logCompleted(state.projectId, 'architecture_agent', {
-        inputTokens: usage.input_tokens,
-        outputTokens: usage.output_tokens,
-        model: ARCHITECTURE_MODEL, // claude-sonnet-4-6 per Phase 2D tiering
+        inputTokens: result.usage.inputTokens,
+        outputTokens: result.usage.outputTokens,
+        model: result.model,
       });
 
       return { artifacts };

@@ -2,7 +2,7 @@
 
 `devflow-be` is the NestJS API for the migrated DevFlow product. It serves the PM, DEV, CLIENT, and ADMIN workspaces used by `devlow-frontend`.
 
-The current production-ready surface is the project delivery lifecycle around intake, client invites, kickoff, tasks, work orders, artifacts, collaboration, timeline, notifications, and delivery review. The full orchestrator remains the final major integration target.
+The current production-ready surface is the project delivery lifecycle around intake, client invites, kickoff, tasks, work orders, artifacts, collaboration, timeline, notifications, delivery review, and OpenRouter-backed orchestration. DevFlow's full-project path uses LangGraph to coordinate custom agents and can hand approved generated artifacts to GitHub delivery when GitHub App credentials are configured.
 
 ## Prerequisites
 
@@ -59,11 +59,13 @@ NODE_ENV="development"
 CORS_ORIGIN="http://localhost:3000"
 SUPABASE_SERVICE_ROLE_KEY=""
 SUPABASE_ANON_KEY=""
-ANTHROPIC_API_KEY=""
-OPENAI_API_KEY=""
+# Legacy/alternate provider keys. The LangGraph and work-order agents use OpenRouter by default.
+# ANTHROPIC_API_KEY=""
+# OPENAI_API_KEY=""
 GITHUB_APP_ID=""
 GITHUB_PRIVATE_KEY=""
 GITHUB_INSTALLATION_ID=""
+GITHUB_ORG=""
 LANGCHAIN_API_KEY=""
 LANGCHAIN_TRACING_V2="false"
 LANGCHAIN_PROJECT="devflow"
@@ -71,7 +73,9 @@ LANGCHAIN_PROJECT="devflow"
 
 `SUPABASE_SERVICE_ROLE_KEY` is server-side only. Never expose it to `devlow-frontend`.
 
-`AGENT_PROVIDER=mock` runs the deterministic local orchestration provider and does not require LLM or GitHub credentials. Use `AGENT_PROVIDER=llm` with `LLM_PROVIDER=openrouter` and `OPENROUTER_API_KEY` to run real work-order artifact generation through OpenRouter. The default real model is `deepseek/deepseek-v4-flash:free`; `OPENROUTER_FALLBACK_MODEL` gives local runs a second free model when DeepSeek is throttled.
+`AGENT_PROVIDER=mock` runs the deterministic local orchestration provider and does not require LLM or GitHub credentials. Use `AGENT_PROVIDER=llm` with `LLM_PROVIDER=openrouter` and `OPENROUTER_API_KEY` to run real LangGraph and work-order artifact generation through OpenRouter. The default real model is `deepseek/deepseek-v4-flash:free`; `OPENROUTER_FALLBACK_MODEL` gives local runs a second free model when DeepSeek is throttled.
+
+The LangGraph path defines DevFlow's own agents: requirements parser, contract negotiator, frontend, backend, database, architecture, validator, and GitHub commit. LangGraph controls ordering, parallel fan-out, retries, and human approval gates. OpenRouter only supplies the model calls inside those custom agents. After Gate 2 approval, the GitHub commit node creates a private repository through the configured GitHub App, commits generated artifacts, injects CI, and stores `repoUrl` on the project.
 
 ## Scripts
 
