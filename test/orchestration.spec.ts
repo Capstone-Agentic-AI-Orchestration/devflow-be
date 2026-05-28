@@ -826,6 +826,72 @@ describe('OrchestrationService', () => {
     });
   });
 
+  it('normalizes wrapped OpenRouter artifact JSON output', async () => {
+    process.env.OPENROUTER_API_KEY = 'test-openrouter-key';
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                artifact: {
+                  file_path: 'work-orders/work-order-1/frontend-output.tsx',
+                  title: 'Wrapped OpenRouter frontend output',
+                  code: [
+                    "import React from 'react';",
+                    'export function WrappedFrontendOutput() {',
+                    '  return <section><div>Wrapped frontend work order output</div></section>;',
+                    '}',
+                  ].join('\n'),
+                  metadata: { source: 'wrapped-openrouter-test' },
+                },
+              }),
+            },
+          },
+        ],
+      }),
+    }));
+
+    const provider = new LlmAgentProvider();
+    const output = await provider.generateWorkOrderOutput({
+      project: {
+        id: 'test-project-id',
+        companyName: 'TestCo',
+        brief: 'Build a shop',
+        stackKey: 'nextjs-nestjs',
+      },
+      workOrder: {
+        id: 'work-order-1',
+        title: 'Build frontend shell',
+        instructions: 'Create the first dashboard shell.',
+        agentType: WorkOrderAgentType.FRONTEND,
+        priority: WorkOrderPriority.HIGH,
+      },
+      task: {
+        id: 'task-1',
+        title: 'Frontend dashboard',
+        description: 'Client dashboard task.',
+        assignedToId: 'dev-1',
+        status: ProjectTaskStatus.TODO,
+      },
+      sourceArtifact: null,
+      executionRunId: 'execution-1',
+    });
+
+    expect(output).toEqual(expect.objectContaining({
+      filePath: 'work-orders/work-order-1/frontend-output.tsx',
+      displayName: 'Wrapped OpenRouter frontend output',
+      language: 'typescript',
+      content: expect.stringContaining('export function WrappedFrontendOutput'),
+      metadata: expect.objectContaining({
+        source: 'wrapped-openrouter-test',
+        provider: 'openrouter',
+        model: 'deepseek/deepseek-v4-flash:free',
+      }),
+    }));
+  });
+
   it('executeWorkOrder fails cleanly when OpenRouter returns invalid JSON', async () => {
     process.env.AGENT_PROVIDER = 'llm';
     process.env.OPENROUTER_API_KEY = 'test-openrouter-key';

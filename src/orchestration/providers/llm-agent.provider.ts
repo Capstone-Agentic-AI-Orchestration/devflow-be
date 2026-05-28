@@ -108,6 +108,7 @@ export class LlmAgentProvider implements WorkOrderAgentProvider {
         model,
         messages: this.messagesFor(context),
         temperature: 0.2,
+        max_tokens: 1200,
         response_format: { type: 'json_object' },
       }),
     });
@@ -126,7 +127,7 @@ export class LlmAgentProvider implements WorkOrderAgentProvider {
       throw new Error(`OpenRouter ${model} returned an empty response.`);
     }
 
-    const output = this.parseOutput(content, model);
+    const output = await this.parseOutputOrRepair(content, model, context);
     return {
       ...output,
       metadata: {
@@ -140,6 +141,94 @@ export class LlmAgentProvider implements WorkOrderAgentProvider {
     };
   }
 
+  private async parseOutputOrRepair(
+    content: string,
+    model: string,
+    context: WorkOrderAgentContext,
+  ): Promise<GeneratedWorkOrderOutput> {
+    try {
+      return this.parseOutput(content, model);
+    } catch (error) {
+      return this.repairOutput(model, content, context, error);
+    }
+  }
+
+  private async repairOutput(
+    model: string,
+    content: string,
+    context: WorkOrderAgentContext,
+    originalError: unknown,
+  ): Promise<GeneratedWorkOrderOutput> {
+    const contract = agentArtifactContractFor(context.workOrder.agentType);
+    const response = await fetch(`${this.baseUrl()}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+        'Content-Type': 'application/json',
+        'HTTP-Referer': process.env.OPENROUTER_SITE_URL || 'http://localhost:4000',
+        'X-Title': process.env.OPENROUTER_APP_NAME || 'DevFlow',
+      },
+      body: JSON.stringify({
+        model,
+        messages: [
+          {
+            role: 'system',
+            content: [
+              'Repair this DevFlow model output into one strict JSON object only.',
+              'Do not include markdown fences or commentary.',
+              'Use exactly this schema:',
+              '{"filePath":"string","displayName":"string","language":"string","content":"string","metadata":{}}',
+              `filePath must be work-orders/${context.workOrder.id}/${contract.fileName}`,
+              `language must be ${contract.language}.`,
+              `content must satisfy: ${contract.requiredSignals
+                .map((signal) => signal.anyOf.map((value) => `"${value}"`).join(' or '))
+                .join('; ')}.`,
+            ].join('\n'),
+          },
+          {
+            role: 'user',
+            content: JSON.stringify({
+              parseError: this.errorMessage(originalError),
+              invalidOutput: content.slice(0, 8000),
+              workOrder: {
+                id: context.workOrder.id,
+                title: context.workOrder.title,
+                instructions: context.workOrder.instructions,
+                agentType: context.workOrder.agentType,
+              },
+            }),
+          },
+        ],
+        temperature: 0,
+        max_tokens: 1200,
+        response_format: { type: 'json_object' },
+      }),
+    });
+
+    const payload = await response.json().catch(() => null) as OpenRouterChatResponse | null;
+    if (!response.ok) {
+      const detail = payload?.error?.message || response.statusText;
+      throw new Error(
+        `OpenRouter ${model} repair request failed (${response.status}): ${detail}. Original output error: ${this.errorMessage(originalError)}`,
+      );
+    }
+
+    const repairedContent = payload?.choices?.[0]?.message?.content;
+    if (!repairedContent?.trim()) {
+      throw new Error(
+        `OpenRouter ${model} repair returned an empty response. Original output error: ${this.errorMessage(originalError)}`,
+      );
+    }
+
+    try {
+      return this.parseOutput(repairedContent, model);
+    } catch (repairError) {
+      throw new Error(
+        `OpenRouter ${model} repair returned invalid artifact JSON: ${this.errorMessage(repairError)}. Original output error: ${this.errorMessage(originalError)}`,
+      );
+    }
+  }
+
   private messagesFor(context: WorkOrderAgentContext): OpenRouterChatMessage[] {
     const contract = agentArtifactContractFor(context.workOrder.agentType);
     return [
@@ -150,10 +239,13 @@ export class LlmAgentProvider implements WorkOrderAgentProvider {
           'Return one strict JSON object only. Do not include markdown fences or commentary.',
           'The JSON schema is:',
           '{"filePath":"string","displayName":"string","language":"string","content":"string","metadata":{}}',
+          'The content field must contain the complete generated file content as a string, not a summary.',
           `filePath must start with work-orders/${context.workOrder.id}/`,
           `filePath must end with one of: ${contract.requiredExtensions.join(', ')}`,
           `language must be ${contract.language}.`,
-          `The content must satisfy these checks: ${contract.requiredSignals.map((signal) => signal.message).join('; ')}.`,
+          `The content must satisfy these exact signal requirements: ${contract.requiredSignals
+            .map((signal) => signal.anyOf.map((value) => `"${value}"`).join(' or '))
+            .join('; ')}.`,
           this.agentInstruction(context.workOrder.agentType),
         ].join('\n'),
       },
@@ -186,7 +278,11 @@ export class LlmAgentProvider implements WorkOrderAgentProvider {
   private agentInstruction(agentType: WorkOrderAgentType): string {
     switch (agentType) {
       case WorkOrderAgentType.FRONTEND:
-        return 'Generate a focused React/Next.js component. Include an exported component and renderable JSX.';
+        return [
+          'Generate a focused React/Next.js component.',
+          'The content string must include "export function" and render JSX containing a <section> or <div>.',
+          'Use this shape: export function WorkOrderOutput() { return (<section><div>...</div></section>); }',
+        ].join(' ');
       case WorkOrderAgentType.BACKEND:
         return 'Generate a focused NestJS-compatible TypeScript service or controller. Include @Injectable, export class, or a Controller contract.';
       case WorkOrderAgentType.DATABASE:
@@ -213,13 +309,15 @@ export class LlmAgentProvider implements WorkOrderAgentProvider {
       throw new Error(`OpenRouter ${model} response must be a JSON object.`);
     }
 
-    const record = parsed as Record<string, unknown>;
-    if (
-      typeof record.filePath !== 'string' ||
-      typeof record.displayName !== 'string' ||
-      typeof record.language !== 'string' ||
-      typeof record.content !== 'string'
-    ) {
+    const record = this.outputRecordFrom(parsed);
+    const filePath = this.stringField(record, ['filePath', 'file_path', 'path']);
+    const displayName = this.stringField(record, ['displayName', 'display_name', 'name', 'title'])
+      ?? (filePath ? filePath.split('/').pop() : null);
+    const language = this.stringField(record, ['language', 'lang'])
+      ?? this.languageFromFilePath(filePath);
+    const generatedContent = this.stringField(record, ['content', 'code', 'source', 'body']);
+
+    if (!filePath || !displayName || !language || !generatedContent) {
       throw new Error(
         `OpenRouter ${model} response must include string filePath, displayName, language, and content fields.`,
       );
@@ -230,12 +328,57 @@ export class LlmAgentProvider implements WorkOrderAgentProvider {
       : {};
 
     return {
-      filePath: record.filePath,
-      displayName: record.displayName,
-      language: record.language,
-      content: record.content,
+      filePath,
+      displayName,
+      language,
+      content: generatedContent,
       metadata: metadata as Prisma.InputJsonObject,
     };
+  }
+
+  private outputRecordFrom(value: unknown): Record<string, unknown> {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      throw new Error('OpenRouter response must be a JSON object.');
+    }
+
+    const record = value as Record<string, unknown>;
+    if (
+      this.stringField(record, ['filePath', 'file_path', 'path']) ||
+      this.stringField(record, ['content', 'code', 'source', 'body'])
+    ) {
+      return record;
+    }
+
+    for (const key of ['artifact', 'output', 'result', 'file', 'data']) {
+      const nested = record[key];
+      if (nested && typeof nested === 'object' && !Array.isArray(nested)) {
+        return this.outputRecordFrom(nested);
+      }
+    }
+
+    return record;
+  }
+
+  private stringField(record: Record<string, unknown>, keys: string[]): string | null {
+    for (const key of keys) {
+      const value = record[key];
+      if (typeof value === 'string' && value.trim()) {
+        return value;
+      }
+    }
+
+    return null;
+  }
+
+  private languageFromFilePath(filePath: string | null): string | null {
+    if (!filePath) return null;
+    if (filePath.endsWith('.sql')) return 'sql';
+    if (filePath.endsWith('.md')) return 'markdown';
+    if (filePath.endsWith('.tsx') || filePath.endsWith('.jsx') || filePath.endsWith('.ts')) {
+      return 'typescript';
+    }
+
+    return null;
   }
 
   private extractJson(content: string): string {

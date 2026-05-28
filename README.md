@@ -53,7 +53,7 @@ LLM_PROVIDER="openrouter"
 OPENROUTER_API_KEY=""
 OPENROUTER_BASE_URL="https://openrouter.ai/api/v1"
 OPENROUTER_MODEL="deepseek/deepseek-v4-flash:free"
-OPENROUTER_FALLBACK_MODEL=""
+OPENROUTER_FALLBACK_MODEL="nvidia/nemotron-3-nano-30b-a3b:free"
 PORT=4000
 NODE_ENV="development"
 CORS_ORIGIN="http://localhost:3000"
@@ -71,7 +71,7 @@ LANGCHAIN_PROJECT="devflow"
 
 `SUPABASE_SERVICE_ROLE_KEY` is server-side only. Never expose it to `devlow-frontend`.
 
-`AGENT_PROVIDER=mock` runs the deterministic local orchestration provider and does not require LLM or GitHub credentials. Use `AGENT_PROVIDER=llm` with `LLM_PROVIDER=openrouter` and `OPENROUTER_API_KEY` to run real work-order artifact generation through OpenRouter. The default real model is `deepseek/deepseek-v4-flash:free`; set `OPENROUTER_FALLBACK_MODEL` if you want an optional fallback model.
+`AGENT_PROVIDER=mock` runs the deterministic local orchestration provider and does not require LLM or GitHub credentials. Use `AGENT_PROVIDER=llm` with `LLM_PROVIDER=openrouter` and `OPENROUTER_API_KEY` to run real work-order artifact generation through OpenRouter. The default real model is `deepseek/deepseek-v4-flash:free`; `OPENROUTER_FALLBACK_MODEL` gives local runs a second free model when DeepSeek is throttled.
 
 ## Scripts
 
