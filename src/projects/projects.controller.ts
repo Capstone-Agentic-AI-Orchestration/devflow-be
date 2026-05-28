@@ -388,6 +388,12 @@ export class ProjectsController {
     return this.projectsService.findOrchestrationRun(id, runId, user);
   }
 
+  @Get(':id/orchestration/provider')
+  @Roles(UserRole.PM, UserRole.DEV, UserRole.ADMIN)
+  findOrchestrationProviderStatus(@Param('id') id: string, @CurrentUser() user: AuthUser) {
+    return this.projectsService.findOrchestrationProviderStatus(id, user);
+  }
+
   @Post(':id/orchestration/rerun-ready')
   @Roles(UserRole.PM, UserRole.ADMIN)
   @HttpCode(HttpStatus.ACCEPTED)

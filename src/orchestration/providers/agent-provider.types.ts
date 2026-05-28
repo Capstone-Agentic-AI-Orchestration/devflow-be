@@ -42,3 +42,23 @@ export interface WorkOrderAgentProvider {
     context: WorkOrderAgentContext,
   ): GeneratedWorkOrderOutput | Promise<GeneratedWorkOrderOutput>;
 }
+
+export interface AgentProviderCapability {
+  mode: AgentProviderMode;
+  displayName: string;
+  active: boolean;
+  available: boolean;
+  implemented: boolean;
+  missingRequirements: string[];
+  reason: string | null;
+}
+
+export interface AgentProviderStatus {
+  requestedMode: AgentProviderMode;
+  activeMode: AgentProviderMode;
+  available: boolean;
+  fallbackMode: AgentProviderMode | null;
+  missingRequirements: string[];
+  reason: string | null;
+  providers: AgentProviderCapability[];
+}

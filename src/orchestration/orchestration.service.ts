@@ -23,9 +23,9 @@ import { GithubCommitNode } from './nodes/github-commit.node';
 import { MemoryService } from '../memory/memory.service';
 import { DevFlowGateway } from '../gateway/devflow.gateway';
 import { NotificationsService } from '../notifications/notifications.service';
+import { AgentProviderRegistry } from './providers/agent-provider.registry';
 import { ArtifactContractValidator } from './providers/artifact-contract.validator';
-import { MockAgentProvider } from './providers/mock-agent.provider';
-import { AgentProviderMode } from './providers/agent-provider.types';
+import { AgentProviderMode, AgentProviderStatus } from './providers/agent-provider.types';
 import {
   agentArtifactContractFor,
   ORCHESTRATION_CONTRACT_VERSION,
@@ -151,8 +151,6 @@ export class OrchestrationService implements OnModuleInit {
     string
   >;
   private checkpointer!: PostgresSaver;
-  private providerModeWarningLogged = false;
-
   constructor(
     private readonly prisma: PrismaService,
     private readonly requirementsParser: RequirementsParserNode,
@@ -165,11 +163,15 @@ export class OrchestrationService implements OnModuleInit {
     private readonly githubCommit: GithubCommitNode,
     private readonly memory: MemoryService,
     private readonly artifactContractValidator: ArtifactContractValidator,
-    private readonly mockAgentProvider: MockAgentProvider,
+    private readonly agentProviderRegistry: AgentProviderRegistry,
     private readonly notifications: NotificationsService,
     // Optional: WebSocket gateway may not be present in all environments
     @Optional() private readonly gateway: DevFlowGateway | null,
   ) {}
+
+  getProviderStatus(): AgentProviderStatus {
+    return this.agentProviderRegistry.getStatus();
+  }
 
   async onModuleInit(): Promise<void> {
     this.logger.log('Initializing orchestration graph...');
@@ -204,6 +206,7 @@ export class OrchestrationService implements OnModuleInit {
     trigger: OrchestrationRunTrigger = OrchestrationRunTrigger.START,
   ): Promise<string> {
     const runId = createId();
+    this.agentProviderRegistry.getActiveProviderOrThrow();
 
     this.logger.log(
       `Starting run ${runId} for project ${projectId} (${companyName})`,
@@ -575,6 +578,7 @@ export class OrchestrationService implements OnModuleInit {
 
     this.assertWorkOrderExecutable(workOrder, options);
 
+    const provider = this.agentProviderRegistry.getActiveProviderOrThrow();
     const attempt = workOrder.executionAttempt + 1;
     const nodeName = this.workOrderNodeName(workOrder.agentType);
     const contractMetadata = this.workOrderContractMetadata(workOrder.agentType);
@@ -685,7 +689,7 @@ export class OrchestrationService implements OnModuleInit {
         sourceArtifact: workOrder.artifact,
         executionRunId,
       };
-      const output = await this.mockAgentProvider.generateWorkOrderOutput(agentContext);
+      const output = await provider.generateWorkOrderOutput(agentContext);
       const validation = this.artifactContractValidator.validate(output, agentContext);
 
       if (!validation.valid) {
@@ -932,7 +936,7 @@ export class OrchestrationService implements OnModuleInit {
             nodeName: MOCK_NODE.LOAD_READY_WORK_ORDERS,
             eventType: 'STARTED',
             costMeta: {
-              provider: this.mockAgentProvider.mode,
+              provider: this.agentProviderMode(),
               runId: state.runId,
               workOrderCount: readyWorkOrderIds.length,
             },
@@ -949,7 +953,7 @@ export class OrchestrationService implements OnModuleInit {
             title: 'Orchestration started',
             body: `${readyWorkOrderIds.length} ready work order${readyWorkOrderIds.length === 1 ? '' : 's'} queued for mock agent execution.`,
             metadata: {
-              provider: this.mockAgentProvider.mode,
+              provider: this.agentProviderMode(),
               runId: state.runId,
               readyWorkOrderIds,
             },
@@ -1018,7 +1022,7 @@ export class OrchestrationService implements OnModuleInit {
             nodeName: MOCK_NODE.FINALIZE,
             eventType: failed ? 'FAILED' : 'COMPLETED',
             costMeta: {
-              provider: this.mockAgentProvider.mode,
+              provider: this.agentProviderMode(),
               runId: state.runId,
               completedArtifactIds: state.completedArtifactIds,
               failedWorkOrderIds: state.failedWorkOrderIds,
@@ -1037,7 +1041,7 @@ export class OrchestrationService implements OnModuleInit {
             title,
             body,
             metadata: {
-              provider: this.mockAgentProvider.mode,
+              provider: this.agentProviderMode(),
               runId: state.runId,
               completedArtifactIds: state.completedArtifactIds,
               failedWorkOrderIds: state.failedWorkOrderIds,
@@ -1067,7 +1071,7 @@ export class OrchestrationService implements OnModuleInit {
           title: 'Orchestration outputs ready',
           body,
           metadata: {
-            provider: this.mockAgentProvider.mode,
+            provider: this.agentProviderMode(),
             runId: state.runId,
             artifactCount: state.completedArtifactIds.length,
           },
@@ -1140,19 +1144,11 @@ export class OrchestrationService implements OnModuleInit {
   }
 
   private agentProviderMode(): AgentProviderMode {
-    const requested = this.requestedAgentProviderMode();
-    if (requested === 'llm' && !this.providerModeWarningLogged) {
-      this.providerModeWarningLogged = true;
-      this.logger.warn(
-        'AGENT_PROVIDER=llm was requested, but no LLM work-order provider is wired yet. Falling back to the mock provider contract.',
-      );
-    }
-
-    return this.mockAgentProvider.mode;
+    return this.agentProviderRegistry.activeMode();
   }
 
   private requestedAgentProviderMode(): AgentProviderMode {
-    return process.env.AGENT_PROVIDER === 'llm' ? 'llm' : 'mock';
+    return this.agentProviderRegistry.requestedMode();
   }
 
   private async getRunId(projectId: string): Promise<string> {

@@ -13,7 +13,9 @@ import { DatabaseAgentNode } from './nodes/database-agent.node';
 import { ArchitectureAgentNode } from './nodes/architecture-agent.node';
 import { ValidatorNode } from './nodes/validator.node';
 import { GithubCommitNode } from './nodes/github-commit.node';
+import { AgentProviderRegistry } from './providers/agent-provider.registry';
 import { ArtifactContractValidator } from './providers/artifact-contract.validator';
+import { LlmAgentProvider } from './providers/llm-agent.provider';
 import { MockAgentProvider } from './providers/mock-agent.provider';
 
 @Module({
@@ -38,7 +40,9 @@ import { MockAgentProvider } from './providers/mock-agent.provider';
     ArchitectureAgentNode,
     ValidatorNode,
     GithubCommitNode,
+    AgentProviderRegistry,
     ArtifactContractValidator,
+    LlmAgentProvider,
     MockAgentProvider,
   ],
   exports: [OrchestrationService],

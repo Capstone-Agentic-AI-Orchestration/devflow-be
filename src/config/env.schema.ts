@@ -37,26 +37,6 @@ export const envSchema = z.object({
     .default('300000')
     .transform((v) => parseInt(v, 10))
     .pipe(z.number().positive()),
-}).superRefine((env, ctx) => {
-  if (env.AGENT_PROVIDER !== 'llm') return;
-
-  const requiredForLlm: Array<keyof typeof env> = [
-    'ANTHROPIC_API_KEY',
-    'OPENAI_API_KEY',
-    'GITHUB_APP_ID',
-    'GITHUB_PRIVATE_KEY',
-    'GITHUB_INSTALLATION_ID',
-  ];
-
-  for (const key of requiredForLlm) {
-    if (!env[key]) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: [key],
-        message: `${key} is required when AGENT_PROVIDER=llm`,
-      });
-    }
-  }
 });
 
 export type EnvSchema = z.infer<typeof envSchema>;

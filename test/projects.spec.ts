@@ -120,6 +120,15 @@ function makeOrchestrationMock() {
       retryCount: 0,
       error: null,
     }),
+    getProviderStatus: vi.fn().mockReturnValue({
+      requestedMode: 'mock',
+      activeMode: 'mock',
+      available: true,
+      fallbackMode: null,
+      missingRequirements: [],
+      reason: null,
+      providers: [],
+    }),
     executeWorkOrder: vi.fn().mockResolvedValue({
       executionRunId: 'work-order-run-1',
       artifactId: 'artifact-generated-1',

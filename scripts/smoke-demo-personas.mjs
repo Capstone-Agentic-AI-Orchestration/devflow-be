@@ -176,6 +176,7 @@ async function smoke() {
   const pmProjectDetail = await apiGet(`/projects/${projectId}`, pmToken);
   const deliveryReview = await apiGet(`/projects/${projectId}/delivery-review`, pmToken);
   const kickoff = await apiGet(`/projects/${projectId}/kickoff`, pmToken);
+  const providerStatus = await apiGet(`/projects/${projectId}/orchestration/provider`, pmToken);
 
   assertCheck(pmArtifacts.length === 3, `PM should see 3 artifacts, saw ${pmArtifacts.length}.`);
   assertCheck(devTasks.length === 2, `DEV should see 2 assigned tasks, saw ${devTasks.length}.`);
@@ -193,6 +194,8 @@ async function smoke() {
   assertCheck(deliveryReview?.status === 'REVISION_REQUESTED', `Delivery review endpoint should return REVISION_REQUESTED, got ${deliveryReview?.status}.`);
   assertCheck(pmProjectDetail.lifecycle?.stage === 'REVISION', `PM project detail should derive REVISION lifecycle, got ${pmProjectDetail.lifecycle?.stage}.`);
   assertCheck(kickoff.status === 'READY', `Expected kickoff status READY, got ${kickoff.status}.`);
+  assertCheck(providerStatus.requestedMode === 'mock', `Expected mock provider request mode, got ${providerStatus.requestedMode}.`);
+  assertCheck(providerStatus.available === true, 'Mock provider should be available for smoke orchestration.');
   const initialClientReadiness = await apiGet(`/projects/${projectId}/delivery-readiness`, clientToken);
   const initialPmReadiness = await apiGet(`/projects/${projectId}/delivery-readiness`, pmToken);
   assertCheck(initialClientReadiness.projectId === projectId, 'CLIENT delivery readiness should be scoped to the demo project.');
@@ -223,6 +226,7 @@ async function smoke() {
   assertCheck(dispatchExecution?.metadata?.contract?.version === 'mock-work-order-v1', 'Manual dispatch execution should expose the mock work-order contract version.');
   assertCheck(dispatchExecution?.metadata?.providerMode === 'mock', 'Manual dispatch execution should expose the active mock provider.');
   await apiGet(`/projects/${projectId}/orchestration/runs`, clientToken, 403);
+  await apiGet(`/projects/${projectId}/orchestration/provider`, clientToken, 403);
 
   await apiPost(`/projects/${projectId}/work-orders/${dispatchableWorkOrder.id}/dispatch`, devToken, {}, 403);
 

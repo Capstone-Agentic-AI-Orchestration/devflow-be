@@ -1,5 +1,5 @@
 import 'reflect-metadata';
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { OrchestrationService } from '../src/orchestration/orchestration.service';
 import { PrismaService } from '../src/prisma/prisma.service';
 import { MemoryService } from '../src/memory/memory.service';
@@ -11,7 +11,9 @@ import { DatabaseAgentNode } from '../src/orchestration/nodes/database-agent.nod
 import { ArchitectureAgentNode } from '../src/orchestration/nodes/architecture-agent.node';
 import { ValidatorNode } from '../src/orchestration/nodes/validator.node';
 import { GithubCommitNode } from '../src/orchestration/nodes/github-commit.node';
+import { AgentProviderRegistry } from '../src/orchestration/providers/agent-provider.registry';
 import { ArtifactContractValidator } from '../src/orchestration/providers/artifact-contract.validator';
+import { LlmAgentProvider } from '../src/orchestration/providers/llm-agent.provider';
 import { MockAgentProvider } from '../src/orchestration/providers/mock-agent.provider';
 import { NotificationsService } from '../src/notifications/notifications.service';
 import type { RequirementsDocument, ProjectContract, GeneratedArtifact } from '../src/orchestration/graph/devflow.state';
@@ -147,12 +149,27 @@ describe('OrchestrationService', () => {
   let githubCommit: { execute: ReturnType<typeof vi.fn> };
   let memory: ReturnType<typeof makeMemoryMock>;
   let mockAgentProvider: MockAgentProvider;
+  let agentProviderRegistry: AgentProviderRegistry;
   let notifications: ReturnType<typeof makeNotificationsMock>;
+  let originalAgentProvider: string | undefined;
+  let originalAnthropicApiKey: string | undefined;
+  let originalOpenAiApiKey: string | undefined;
 
   beforeEach(() => {
+    originalAgentProvider = process.env.AGENT_PROVIDER;
+    originalAnthropicApiKey = process.env.ANTHROPIC_API_KEY;
+    originalOpenAiApiKey = process.env.OPENAI_API_KEY;
+    process.env.AGENT_PROVIDER = 'mock';
+    delete process.env.ANTHROPIC_API_KEY;
+    delete process.env.OPENAI_API_KEY;
+
     prisma = makePrismaMock();
     memory = makeMemoryMock();
     mockAgentProvider = new MockAgentProvider();
+    agentProviderRegistry = new AgentProviderRegistry(
+      mockAgentProvider,
+      new LlmAgentProvider(),
+    );
     notifications = makeNotificationsMock();
 
     requirementsParser = makeNodeMock({ requirements: MOCK_REQUIREMENTS });
@@ -203,13 +220,32 @@ describe('OrchestrationService', () => {
       githubCommit as unknown as GithubCommitNode,
       memory as unknown as MemoryService,
       new ArtifactContractValidator(),
-      mockAgentProvider,
+      agentProviderRegistry,
       notifications as unknown as NotificationsService,
       null,
     );
 
     // Mock checkpointer so onModuleInit doesn't need a real DB
     vi.spyOn(service as unknown as { onModuleInit: () => Promise<void> }, 'onModuleInit').mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    if (originalAgentProvider === undefined) {
+      delete process.env.AGENT_PROVIDER;
+    } else {
+      process.env.AGENT_PROVIDER = originalAgentProvider;
+    }
+    if (originalAnthropicApiKey === undefined) {
+      delete process.env.ANTHROPIC_API_KEY;
+    } else {
+      process.env.ANTHROPIC_API_KEY = originalAnthropicApiKey;
+    }
+    if (originalOpenAiApiKey === undefined) {
+      delete process.env.OPENAI_API_KEY;
+    } else {
+      process.env.OPENAI_API_KEY = originalOpenAiApiKey;
+    }
+    vi.restoreAllMocks();
   });
 
   it('startRun updates project runId and returns a non-empty runId', async () => {
@@ -314,6 +350,50 @@ describe('OrchestrationService', () => {
     const status = await service.getStatus('test-project-id');
     expect(status.error).toBeNull();
     expect(status.retryCount).toBe(1);
+  });
+
+  it('getProviderStatus reports mock as available default provider', () => {
+    const status = service.getProviderStatus();
+
+    expect(status).toEqual(expect.objectContaining({
+      requestedMode: 'mock',
+      activeMode: 'mock',
+      available: true,
+      fallbackMode: null,
+      missingRequirements: [],
+      reason: null,
+    }));
+    expect(status.providers).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        mode: 'mock',
+        active: true,
+        available: true,
+        implemented: true,
+      }),
+      expect.objectContaining({
+        mode: 'llm',
+        active: false,
+        available: false,
+        implemented: false,
+      }),
+    ]));
+  });
+
+  it('getProviderStatus reports requested LLM mode unavailable without API keys', () => {
+    process.env.AGENT_PROVIDER = 'llm';
+    delete process.env.ANTHROPIC_API_KEY;
+    delete process.env.OPENAI_API_KEY;
+
+    const status = service.getProviderStatus();
+
+    expect(status).toEqual(expect.objectContaining({
+      requestedMode: 'llm',
+      activeMode: 'llm',
+      available: false,
+      fallbackMode: 'mock',
+      missingRequirements: ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY'],
+    }));
+    expect(status.reason).toContain('LLM provider requires');
   });
 
   it('executeWorkOrder records execution logs, creates an artifact, and links it back to work order and task', async () => {
@@ -527,6 +607,50 @@ describe('OrchestrationService', () => {
 
     expect(prisma.orchestrationRun.create).not.toHaveBeenCalled();
     expect(prisma.workOrderExecution.create).not.toHaveBeenCalled();
+    expect(prisma.artifact.create).not.toHaveBeenCalled();
+  });
+
+  it('executeWorkOrder fails predictably when LLM mode is requested without provider keys', async () => {
+    process.env.AGENT_PROVIDER = 'llm';
+    delete process.env.ANTHROPIC_API_KEY;
+    delete process.env.OPENAI_API_KEY;
+    prisma.workOrder.findFirst.mockResolvedValue({
+      id: 'work-order-1',
+      projectId: 'test-project-id',
+      taskId: 'task-1',
+      artifactId: null,
+      title: 'Build frontend shell',
+      instructions: 'Create the first dashboard shell.',
+      agentType: WorkOrderAgentType.FRONTEND,
+      priority: WorkOrderPriority.HIGH,
+      status: WorkOrderStatus.READY,
+      executionAttempt: 0,
+      executionRunId: null,
+      executionStartedAt: null,
+      dispatchedAt: null,
+      project: {
+        id: 'test-project-id',
+        companyName: 'TestCo',
+        brief: 'Build a shop',
+        stackKey: 'nextjs-nestjs',
+      },
+      task: {
+        id: 'task-1',
+        title: 'Frontend dashboard',
+        description: 'Client dashboard task.',
+        assignedToId: 'dev-1',
+        status: ProjectTaskStatus.TODO,
+      },
+      artifact: null,
+    });
+
+    await expect(
+      service.executeWorkOrder('test-project-id', 'work-order-1', 'pm-1'),
+    ).rejects.toThrow('Agent provider llm is unavailable');
+
+    expect(prisma.orchestrationRun.create).not.toHaveBeenCalled();
+    expect(prisma.workOrderExecution.create).not.toHaveBeenCalled();
+    expect(prisma.workOrder.update).not.toHaveBeenCalled();
     expect(prisma.artifact.create).not.toHaveBeenCalled();
   });
 

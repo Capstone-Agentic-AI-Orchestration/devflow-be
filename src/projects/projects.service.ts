@@ -507,6 +507,11 @@ export class ProjectsService {
     return { ...run, events };
   }
 
+  async findOrchestrationProviderStatus(id: string, user: AuthUser) {
+    await this.assertAccessible(id, user);
+    return this.orchestration.getProviderStatus();
+  }
+
   async findAll(user: AuthUser): Promise<ProjectListItem[]> {
     const projects = await this.prisma.project.findMany({
       where: this.projectAccessWhere(user),
