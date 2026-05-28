@@ -153,6 +153,15 @@ function makeOrchestrationMock() {
       permissions: { contents: 'write' },
       reason: null,
     }),
+    verifyLlmProviderAccess: vi.fn().mockResolvedValue({
+      ok: true,
+      provider: 'opencode',
+      model: 'deepseek-v4-flash',
+      fallbackModel: 'deepseek-v4-pro',
+      baseUrl: 'https://opencode.ai/zen/go/v1',
+      reason: null,
+      usage: { inputTokens: 4, outputTokens: 3 },
+    }),
     executeWorkOrder: vi.fn().mockResolvedValue({
       executionRunId: 'work-order-run-1',
       artifactId: 'artifact-generated-1',
@@ -285,6 +294,19 @@ describe('ProjectsService', () => {
       }),
     );
     expect(orchestration.verifyGithubDeliveryAccess).toHaveBeenCalled();
+  });
+
+  it('verifyOrchestrationLlmProvider checks project access before live model verification', async () => {
+    prisma.project.findFirst.mockResolvedValue({ id: 'project-1' });
+
+    await expect(service.verifyOrchestrationLlmProvider('project-1', pmUser)).resolves.toEqual(
+      expect.objectContaining({
+        ok: true,
+        provider: 'opencode',
+        model: 'deepseek-v4-flash',
+      }),
+    );
+    expect(orchestration.verifyLlmProviderAccess).toHaveBeenCalled();
   });
 
   it('updateKickoff marks the project ready when every checklist item is complete', async () => {

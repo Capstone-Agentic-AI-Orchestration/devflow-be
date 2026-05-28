@@ -401,6 +401,13 @@ export class ProjectsController {
     return this.projectsService.verifyOrchestrationGithubDelivery(id, user);
   }
 
+  @Post(':id/orchestration/llm-provider/verify')
+  @Roles(UserRole.PM, UserRole.ADMIN)
+  @HttpCode(HttpStatus.OK)
+  verifyOrchestrationLlmProvider(@Param('id') id: string, @CurrentUser() user: AuthUser) {
+    return this.projectsService.verifyOrchestrationLlmProvider(id, user);
+  }
+
   @Post(':id/orchestration/rerun-ready')
   @Roles(UserRole.PM, UserRole.ADMIN)
   @HttpCode(HttpStatus.ACCEPTED)

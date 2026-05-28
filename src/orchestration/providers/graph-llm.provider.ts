@@ -51,6 +51,19 @@ export interface GraphLlmJsonResult<T> {
   };
 }
 
+export interface GraphLlmProviderVerification {
+  ok: boolean;
+  provider: GraphLlmProviderName;
+  model: string;
+  fallbackModel: string | null;
+  baseUrl: string;
+  reason: string | null;
+  usage: {
+    inputTokens: number;
+    outputTokens: number;
+  } | null;
+}
+
 @Injectable()
 export class GraphLlmProvider {
   providerName(): GraphLlmProviderName {
@@ -109,6 +122,55 @@ export class GraphLlmProvider {
 
   isAvailable(): boolean {
     return Boolean(this.apiKey());
+  }
+
+  async verifyConnection(): Promise<GraphLlmProviderVerification> {
+    const provider = this.providerName();
+    const model = this.model();
+    const fallbackModel = this.fallbackModel();
+    const baseUrl = this.baseUrl();
+
+    if (!this.apiKey()) {
+      return {
+        ok: false,
+        provider,
+        model,
+        fallbackModel,
+        baseUrl,
+        reason: `Graph LLM provider requires ${this.apiKeyName()}.`,
+        usage: null,
+      };
+    }
+
+    try {
+      const result = await this.generateJson<{ ok?: boolean }>({
+        agentName: 'provider_preflight',
+        systemPrompt: 'Return one minimal JSON object only.',
+        userPrompt: 'Return {"ok":true}.',
+        expectedShape: 'object',
+        maxTokens: 32,
+      });
+
+      return {
+        ok: true,
+        provider,
+        model: result.model,
+        fallbackModel,
+        baseUrl,
+        reason: null,
+        usage: result.usage,
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        provider,
+        model,
+        fallbackModel,
+        baseUrl,
+        reason: this.errorMessage(error),
+        usage: null,
+      };
+    }
   }
 
   async generateJson<T>(options: GraphLlmJsonOptions): Promise<GraphLlmJsonResult<T>> {

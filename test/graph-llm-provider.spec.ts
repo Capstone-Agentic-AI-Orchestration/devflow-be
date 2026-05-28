@@ -160,6 +160,50 @@ describe('GraphLlmProvider', () => {
     }));
   });
 
+  it('verifies the active graph LLM provider with a minimal request', async () => {
+    process.env.LLM_PROVIDER = 'opencode';
+    process.env.OPENCODE_API_KEY = 'test-opencode-key';
+    process.env.OPENCODE_MODEL = 'deepseek-v4-flash';
+    process.env.OPENCODE_FALLBACK_MODEL = 'deepseek-v4-pro';
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({
+        choices: [{ message: { content: '{"ok":true}' } }],
+        usage: {
+          prompt_tokens: 4,
+          completion_tokens: 3,
+        },
+      }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(new GraphLlmProvider().verifyConnection()).resolves.toEqual({
+      ok: true,
+      provider: 'opencode',
+      model: 'deepseek-v4-flash',
+      fallbackModel: 'deepseek-v4-pro',
+      baseUrl: 'https://opencode.ai/zen/go/v1',
+      reason: null,
+      usage: { inputTokens: 4, outputTokens: 3 },
+    });
+    expect(fetchMock.mock.calls[0][0]).toBe('https://opencode.ai/zen/go/v1/chat/completions');
+  });
+
+  it('reports a missing API key during graph LLM verification without a network request', async () => {
+    process.env.LLM_PROVIDER = 'openrouter';
+    delete process.env.OPENROUTER_API_KEY;
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(new GraphLlmProvider().verifyConnection()).resolves.toEqual(expect.objectContaining({
+      ok: false,
+      provider: 'openrouter',
+      reason: 'Graph LLM provider requires OPENROUTER_API_KEY.',
+      usage: null,
+    }));
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it('parses Anthropic JSON arrays for LangGraph file agents', async () => {
     process.env.LLM_PROVIDER = 'anthropic';
     process.env.ANTHROPIC_API_KEY = 'test-anthropic-key';

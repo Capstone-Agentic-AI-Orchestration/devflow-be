@@ -30,6 +30,10 @@ import {
 } from '../github/github.service';
 import { AgentProviderRegistry } from './providers/agent-provider.registry';
 import { ArtifactContractValidator } from './providers/artifact-contract.validator';
+import {
+  GraphLlmProvider,
+  GraphLlmProviderVerification,
+} from './providers/graph-llm.provider';
 import { AgentProviderMode, AgentProviderStatus } from './providers/agent-provider.types';
 import {
   agentArtifactContractFor,
@@ -191,6 +195,7 @@ export class OrchestrationService implements OnModuleInit {
     private readonly agentProviderRegistry: AgentProviderRegistry,
     private readonly notifications: NotificationsService,
     private readonly github: GithubService,
+    @Optional() private readonly graphLlmProvider: GraphLlmProvider | null,
     // Optional: WebSocket gateway may not be present in all environments
     @Optional() private readonly gateway: DevFlowGateway | null,
   ) {}
@@ -204,6 +209,14 @@ export class OrchestrationService implements OnModuleInit {
 
   verifyGithubDeliveryAccess(): Promise<GithubDeliveryVerification> {
     return this.github.verifyDeliveryAccess();
+  }
+
+  verifyLlmProviderAccess(): Promise<GraphLlmProviderVerification> {
+    if (!this.graphLlmProvider) {
+      throw new Error('Graph LLM provider is not available in this runtime.');
+    }
+
+    return this.graphLlmProvider.verifyConnection();
   }
 
   async onModuleInit(): Promise<void> {
