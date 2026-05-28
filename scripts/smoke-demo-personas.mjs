@@ -196,6 +196,69 @@ async function smoke() {
   assertCheck(kickoff.status === 'READY', `Expected kickoff status READY, got ${kickoff.status}.`);
   assertCheck(providerStatus.requestedMode === 'mock', `Expected mock provider request mode, got ${providerStatus.requestedMode}.`);
   assertCheck(providerStatus.available === true, 'Mock provider should be available for smoke orchestration.');
+
+  const kickoffStartProject = await apiPost('/projects', pmToken, {
+    companyName: `Smoke Kickoff Start ${Date.now()}`,
+    brief: 'Smoke-created project that proves first-run orchestration starts from a kickoff-ready work order.',
+    stackKey: 'nextjs-nestjs-supabase',
+  });
+  await apiPost(`/projects/${kickoffStartProject.id}/members`, pmToken, {
+    userId: devMe.id,
+    role: 'DEV',
+  });
+  await apiPatch(`/projects/${kickoffStartProject.id}/kickoff`, pmToken, {
+    scopeSummary: 'Smoke kickoff scope confirms first-run orchestration.',
+    milestones: 'Kickoff, mock execution, PM review.',
+    requiredDocuments: 'Smoke requirements brief.',
+    techStackNotes: 'Next.js, NestJS, Supabase.',
+    deliveryRoles: 'PM starts orchestration, DEV receives generated handoff visibility.',
+    readinessNotes: 'All kickoff blockers are cleared for the smoke first run.',
+    scopeConfirmed: true,
+    milestonesConfirmed: true,
+    documentsConfirmed: true,
+    techStackConfirmed: true,
+    rolesConfirmed: true,
+    clientAccessConfirmed: true,
+    initialTasksCreated: true,
+    initialWorkOrdersCreated: true,
+  });
+  const kickoffStartTask = await apiPost(`/projects/${kickoffStartProject.id}/tasks`, pmToken, {
+    title: 'Smoke first-run task',
+    description: 'Task assigned to DEV so generated work order visibility can be verified after first start.',
+    assignedToId: devMe.id,
+  });
+  const kickoffStartWorkOrder = await apiPost(`/projects/${kickoffStartProject.id}/work-orders`, pmToken, {
+    title: 'Smoke first-run frontend handoff',
+    instructions: 'Generate a deterministic frontend artifact that proves first-run orchestration works.',
+    agentType: 'FRONTEND',
+    priority: 'HIGH',
+    taskId: kickoffStartTask.id,
+  });
+  const readyKickoffStartWorkOrder = await apiPatch(`/projects/${kickoffStartProject.id}/work-orders/${kickoffStartWorkOrder.id}`, pmToken, {
+    status: 'READY',
+  });
+  assertCheck(readyKickoffStartWorkOrder.status === 'READY', 'Smoke first-run work order should be READY before orchestration start.');
+  const firstStartAccepted = await apiPost(`/projects/${kickoffStartProject.id}/orchestration/start`, pmToken, {}, 202);
+  assertCheck(Boolean(firstStartAccepted.runId), 'First orchestration start should return a durable run id.');
+  for (let attempt = 0; attempt < 24; attempt += 1) {
+    const nextRuns = await apiGet(`/projects/${kickoffStartProject.id}/orchestration/runs`, pmToken);
+    const nextRun = nextRuns.find((run) => run.runId === firstStartAccepted.runId);
+    if (nextRun?.status && nextRun.status !== 'RUNNING') break;
+    await sleep(500);
+  }
+  const firstStartRuns = await apiGet(`/projects/${kickoffStartProject.id}/orchestration/runs`, pmToken);
+  const firstStartRun = firstStartRuns.find((run) => run.runId === firstStartAccepted.runId);
+  assertCheck(firstStartRun?.status === 'SUCCEEDED', `First orchestration start should succeed, got ${firstStartRun?.status}.`);
+  assertCheck(firstStartRun.trigger === 'START', `First orchestration run should preserve START trigger, got ${firstStartRun.trigger}.`);
+  assertCheck(firstStartRun.executions?.some((execution) => execution.workOrderId === kickoffStartWorkOrder.id && execution.status === 'SUCCEEDED'), 'First orchestration run should attach the generated work-order execution.');
+  const firstStartDetail = await apiGet(`/projects/${kickoffStartProject.id}`, pmToken);
+  assertCheck(firstStartDetail.runId === firstStartAccepted.runId, 'First orchestration start should persist project.runId.');
+  const firstStartArtifacts = await apiGet(`/projects/${kickoffStartProject.id}/artifacts`, pmToken);
+  const firstStartArtifact = firstStartArtifacts.find((artifact) => artifact.id === firstStartRun.executions?.[0]?.artifactId);
+  assertCheck(firstStartArtifact?.validationStatus === 'PASSED', `First-run generated artifact should pass contract validation, got ${firstStartArtifact?.validationStatus}.`);
+  const firstStartDevWorkOrders = await apiGet(`/projects/${kickoffStartProject.id}/work-orders`, devToken);
+  assertCheck(firstStartDevWorkOrders.some((workOrder) => workOrder.id === kickoffStartWorkOrder.id && workOrder.status === 'COMPLETED'), 'DEV should see the completed first-run handoff through task assignment.');
+
   const initialClientReadiness = await apiGet(`/projects/${projectId}/delivery-readiness`, clientToken);
   const initialPmReadiness = await apiGet(`/projects/${projectId}/delivery-readiness`, pmToken);
   assertCheck(initialClientReadiness.projectId === projectId, 'CLIENT delivery readiness should be scoped to the demo project.');
