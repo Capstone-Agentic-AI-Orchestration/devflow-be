@@ -27,6 +27,10 @@ import { ArtifactContractValidator } from './providers/artifact-contract.validat
 import { MockAgentProvider } from './providers/mock-agent.provider';
 import { AgentProviderMode } from './providers/agent-provider.types';
 import {
+  agentArtifactContractFor,
+  ORCHESTRATION_CONTRACT_VERSION,
+} from './providers/agent-contracts';
+import {
   ArtifactValidationStatus,
   NotificationType,
   OrchestrationRunStatus,
@@ -85,6 +89,10 @@ const MOCK_NODE = {
 const MockWorkOrderState = Annotation.Root({
   projectId: Annotation<string>(),
   runId: Annotation<string>(),
+  trigger: Annotation<OrchestrationRunTrigger>({
+    default: () => OrchestrationRunTrigger.START,
+    reducer: (_, next) => next,
+  }),
   actorId: Annotation<string | null>({
     default: () => null,
     reducer: (_, next) => next,
@@ -143,6 +151,7 @@ export class OrchestrationService implements OnModuleInit {
     string
   >;
   private checkpointer!: PostgresSaver;
+  private providerModeWarningLogged = false;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -239,6 +248,7 @@ export class OrchestrationService implements OnModuleInit {
       const initialInput: Partial<MockWorkOrderStateType> = {
         projectId,
         runId,
+        trigger,
         actorId: actorId ?? null,
       };
 
@@ -563,8 +573,11 @@ export class OrchestrationService implements OnModuleInit {
       throw new Error(`Work order ${workOrderId} not found`);
     }
 
+    this.assertWorkOrderExecutable(workOrder, options);
+
     const attempt = workOrder.executionAttempt + 1;
     const nodeName = this.workOrderNodeName(workOrder.agentType);
+    const contractMetadata = this.workOrderContractMetadata(workOrder.agentType);
     const orchestrationRun = await this.findOrCreateWorkOrderRun(projectId, {
       runId: options.parentRunId ?? executionRunId,
       executionRunId,
@@ -600,6 +613,9 @@ export class OrchestrationService implements OnModuleInit {
         metadata: {
           trigger: options.trigger ?? OrchestrationRunTrigger.WORK_ORDER_DISPATCH,
           sourceArtifactId: workOrder.artifactId,
+          providerMode: this.agentProviderMode(),
+          requestedProviderMode: this.requestedAgentProviderMode(),
+          contract: contractMetadata,
         },
       },
     });
@@ -643,6 +659,9 @@ export class OrchestrationService implements OnModuleInit {
           executionRunId,
           attempt,
           agentType: workOrder.agentType,
+          providerMode: this.agentProviderMode(),
+          requestedProviderMode: this.requestedAgentProviderMode(),
+          contract: contractMetadata,
         },
         runTokens: 0,
         occurredAt: startedAt,
@@ -666,7 +685,7 @@ export class OrchestrationService implements OnModuleInit {
         sourceArtifact: workOrder.artifact,
         executionRunId,
       };
-      const output = this.mockAgentProvider.generateWorkOrderOutput(agentContext);
+      const output = await this.mockAgentProvider.generateWorkOrderOutput(agentContext);
       const validation = this.artifactContractValidator.validate(output, agentContext);
 
       if (!validation.valid) {
@@ -733,6 +752,18 @@ export class OrchestrationService implements OnModuleInit {
             attempt,
             artifactId: artifact.id,
             agentType: workOrder.agentType,
+            providerMode: this.agentProviderMode(),
+            requestedProviderMode: this.requestedAgentProviderMode(),
+            contract: contractMetadata,
+            output: {
+              filePath: output.filePath,
+              language: output.language,
+              metadata: output.metadata ?? {},
+            },
+            validation: {
+              summary: validation.summary,
+              errors: validation.errors,
+            },
           },
           runTokens: 0,
           occurredAt: completedAt,
@@ -746,6 +777,22 @@ export class OrchestrationService implements OnModuleInit {
             status: WorkOrderExecutionStatus.SUCCEEDED,
             artifactId: artifact.id,
             completedAt,
+            metadata: {
+              trigger: options.trigger ?? OrchestrationRunTrigger.WORK_ORDER_DISPATCH,
+              sourceArtifactId: workOrder.artifactId,
+              providerMode: this.agentProviderMode(),
+              requestedProviderMode: this.requestedAgentProviderMode(),
+              contract: contractMetadata,
+              output: {
+                filePath: output.filePath,
+                language: output.language,
+                metadata: output.metadata ?? {},
+              },
+              validation: {
+                summary: validation.summary,
+                errors: validation.errors,
+              },
+            },
           },
         }),
         this.incrementRunCompletion(orchestrationRun.id, {
@@ -805,6 +852,9 @@ export class OrchestrationService implements OnModuleInit {
             executionRunId,
             attempt,
             agentType: workOrder.agentType,
+            providerMode: this.agentProviderMode(),
+            requestedProviderMode: this.requestedAgentProviderMode(),
+            contract: contractMetadata,
             error: message,
           },
           runTokens: 0,
@@ -818,6 +868,14 @@ export class OrchestrationService implements OnModuleInit {
             status: WorkOrderExecutionStatus.FAILED,
             error: message,
             completedAt: failedAt,
+            metadata: {
+              trigger: options.trigger ?? OrchestrationRunTrigger.WORK_ORDER_DISPATCH,
+              sourceArtifactId: workOrder.artifactId,
+              providerMode: this.agentProviderMode(),
+              requestedProviderMode: this.requestedAgentProviderMode(),
+              contract: contractMetadata,
+              error: message,
+            },
           },
         }),
         this.incrementRunFailure(orchestrationRun.id, {
@@ -914,7 +972,11 @@ export class OrchestrationService implements OnModuleInit {
             state.projectId,
             workOrderId,
             state.actorId ?? undefined,
-            { emitLifecycleEvents: true },
+            {
+              emitLifecycleEvents: true,
+              parentRunId: state.runId,
+              trigger: state.trigger,
+            },
           );
           completedArtifactIds.push(result.artifactId);
         } catch {
@@ -1030,7 +1092,66 @@ export class OrchestrationService implements OnModuleInit {
     return graph.compile({ checkpointer: this.checkpointer });
   }
 
+  private assertWorkOrderExecutable(
+    workOrder: {
+      id: string;
+      status: WorkOrderStatus;
+      instructions: string | null;
+      executionRunId: string | null;
+      executionStartedAt: Date | null;
+    },
+    options: WorkOrderExecutionOptions,
+  ): void {
+    const isReady = workOrder.status === WorkOrderStatus.READY;
+    const isFreshManualDispatch =
+      workOrder.status === WorkOrderStatus.DISPATCHED &&
+      !workOrder.executionRunId &&
+      !workOrder.executionStartedAt;
+    const isAllowedFailedRetry =
+      options.allowFailedRetry === true &&
+      workOrder.status === WorkOrderStatus.FAILED;
+
+    if (!isReady && !isFreshManualDispatch && !isAllowedFailedRetry) {
+      throw new Error(
+        `Work order ${workOrder.id} must be READY before agent execution`,
+      );
+    }
+
+    if (!workOrder.instructions?.trim()) {
+      throw new Error(
+        `Work order ${workOrder.id} needs instructions before agent execution`,
+      );
+    }
+  }
+
+  private workOrderContractMetadata(
+    agentType: WorkOrderAgentType,
+  ): Prisma.InputJsonObject {
+    const contract = agentArtifactContractFor(agentType);
+    return {
+      version: ORCHESTRATION_CONTRACT_VERSION,
+      agentType,
+      agentSlug: contract.slug,
+      nodeName: contract.nodeName,
+      requiredExtensions: contract.requiredExtensions,
+      requiredSignals: contract.requiredSignals,
+      handoffChecklist: contract.handoffChecklist,
+    };
+  }
+
   private agentProviderMode(): AgentProviderMode {
+    const requested = this.requestedAgentProviderMode();
+    if (requested === 'llm' && !this.providerModeWarningLogged) {
+      this.providerModeWarningLogged = true;
+      this.logger.warn(
+        'AGENT_PROVIDER=llm was requested, but no LLM work-order provider is wired yet. Falling back to the mock provider contract.',
+      );
+    }
+
+    return this.mockAgentProvider.mode;
+  }
+
+  private requestedAgentProviderMode(): AgentProviderMode {
     return process.env.AGENT_PROVIDER === 'llm' ? 'llm' : 'mock';
   }
 
@@ -1076,7 +1197,7 @@ export class OrchestrationService implements OnModuleInit {
     return this.prisma.orchestrationRun.create({
       data: {
         projectId,
-        runId: input.executionRunId,
+        runId: input.runId,
         providerMode: this.agentProviderMode(),
         trigger: input.trigger,
         status: OrchestrationRunStatus.RUNNING,

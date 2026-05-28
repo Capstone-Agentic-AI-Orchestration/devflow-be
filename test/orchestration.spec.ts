@@ -15,7 +15,7 @@ import { ArtifactContractValidator } from '../src/orchestration/providers/artifa
 import { MockAgentProvider } from '../src/orchestration/providers/mock-agent.provider';
 import { NotificationsService } from '../src/notifications/notifications.service';
 import type { RequirementsDocument, ProjectContract, GeneratedArtifact } from '../src/orchestration/graph/devflow.state';
-import { ArtifactValidationStatus, ArtifactReviewStatus, ProjectTaskStatus, WorkOrderAgentType, WorkOrderPriority, WorkOrderStatus } from '@prisma/client';
+import { ArtifactValidationStatus, ArtifactReviewStatus, OrchestrationRunTrigger, ProjectTaskStatus, WorkOrderAgentType, WorkOrderPriority, WorkOrderStatus } from '@prisma/client';
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -385,7 +385,19 @@ describe('OrchestrationService', () => {
         filePath: 'work-orders/work-order-1/frontend-output.tsx',
         clientVisible: false,
         validationStatus: ArtifactValidationStatus.PASSED,
-        validationSummary: 'FRONTEND artifact contract passed',
+        validationSummary: 'FRONTEND artifact contract mock-work-order-v1 passed',
+      }),
+    });
+    expect(prisma.workOrderExecution.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        metadata: expect.objectContaining({
+          providerMode: 'mock',
+          contract: expect.objectContaining({
+            version: 'mock-work-order-v1',
+            agentSlug: 'frontend',
+            nodeName: 'work_order_frontend',
+          }),
+        }),
       }),
     });
     expect(prisma.workOrder.update).toHaveBeenCalledWith({
@@ -414,6 +426,108 @@ describe('OrchestrationService', () => {
         }),
       }),
     });
+  });
+
+  it('executeWorkOrder attaches graph-triggered executions to the parent orchestration run', async () => {
+    prisma.orchestrationRun.findUnique.mockResolvedValue({ id: 'parent-run-db-id' });
+    prisma.workOrder.findFirst.mockResolvedValue({
+      id: 'work-order-1',
+      projectId: 'test-project-id',
+      taskId: 'task-1',
+      artifactId: null,
+      title: 'Build backend service',
+      instructions: 'Create a NestJS service handoff.',
+      agentType: WorkOrderAgentType.BACKEND,
+      priority: WorkOrderPriority.NORMAL,
+      status: WorkOrderStatus.READY,
+      executionAttempt: 0,
+      executionRunId: null,
+      executionStartedAt: null,
+      dispatchedAt: null,
+      project: {
+        id: 'test-project-id',
+        companyName: 'TestCo',
+        brief: 'Build a shop',
+        stackKey: 'nextjs-nestjs',
+      },
+      task: {
+        id: 'task-1',
+        title: 'Backend service',
+        description: 'API task.',
+        assignedToId: 'dev-1',
+        status: ProjectTaskStatus.TODO,
+      },
+      artifact: null,
+    });
+    prisma.artifact.create.mockResolvedValue({
+      id: 'artifact-generated-1',
+      projectId: 'test-project-id',
+      agentType: 'backend',
+      filePath: 'work-orders/work-order-1/backend-output.ts',
+      displayName: 'Build backend service output',
+      reviewStatus: ArtifactReviewStatus.PENDING,
+    });
+
+    await service.executeWorkOrder('test-project-id', 'work-order-1', 'pm-1', {
+      parentRunId: 'parent-run-1',
+      trigger: OrchestrationRunTrigger.START,
+    });
+
+    expect(prisma.orchestrationRun.findUnique).toHaveBeenCalledWith({
+      where: { runId: 'parent-run-1' },
+      select: { id: true },
+    });
+    expect(prisma.orchestrationRun.create).not.toHaveBeenCalled();
+    expect(prisma.workOrderExecution.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        orchestrationRunId: 'parent-run-db-id',
+        workOrderId: 'work-order-1',
+        agentType: WorkOrderAgentType.BACKEND,
+        metadata: expect.objectContaining({
+          trigger: 'START',
+          providerMode: 'mock',
+          contract: expect.objectContaining({
+            version: 'mock-work-order-v1',
+            agentSlug: 'backend',
+            nodeName: 'work_order_backend',
+          }),
+        }),
+      }),
+    });
+  });
+
+  it('executeWorkOrder rejects non-executable completed work orders before creating an execution', async () => {
+    prisma.workOrder.findFirst.mockResolvedValue({
+      id: 'work-order-1',
+      projectId: 'test-project-id',
+      taskId: 'task-1',
+      artifactId: 'artifact-1',
+      title: 'Already complete',
+      instructions: 'This should not run again.',
+      agentType: WorkOrderAgentType.FRONTEND,
+      priority: WorkOrderPriority.NORMAL,
+      status: WorkOrderStatus.COMPLETED,
+      executionAttempt: 1,
+      executionRunId: 'previous-run',
+      executionStartedAt: new Date('2026-05-28T00:00:00.000Z'),
+      dispatchedAt: new Date('2026-05-28T00:00:00.000Z'),
+      project: {
+        id: 'test-project-id',
+        companyName: 'TestCo',
+        brief: 'Build a shop',
+        stackKey: 'nextjs-nestjs',
+      },
+      task: null,
+      artifact: null,
+    });
+
+    await expect(
+      service.executeWorkOrder('test-project-id', 'work-order-1', 'pm-1'),
+    ).rejects.toThrow('Work order work-order-1 must be READY before agent execution');
+
+    expect(prisma.orchestrationRun.create).not.toHaveBeenCalled();
+    expect(prisma.workOrderExecution.create).not.toHaveBeenCalled();
+    expect(prisma.artifact.create).not.toHaveBeenCalled();
   });
 
   it('executeWorkOrder fails the order when generated output violates the artifact contract', async () => {

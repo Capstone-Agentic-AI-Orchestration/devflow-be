@@ -1,4 +1,4 @@
-import { WorkOrderAgentType, WorkOrderPriority } from '@prisma/client';
+import { Prisma, WorkOrderAgentType, WorkOrderPriority } from '@prisma/client';
 
 export type AgentProviderMode = 'mock' | 'llm';
 
@@ -33,6 +33,7 @@ export interface GeneratedWorkOrderOutput {
   displayName: string;
   content: string;
   language: string;
+  metadata?: Prisma.InputJsonObject;
 }
 
 export interface WorkOrderAgentProvider {

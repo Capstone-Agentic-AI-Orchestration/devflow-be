@@ -5,6 +5,10 @@ import {
   WorkOrderAgentContext,
   WorkOrderAgentProvider,
 } from './agent-provider.types';
+import {
+  agentArtifactContractFor,
+  ORCHESTRATION_CONTRACT_VERSION,
+} from './agent-contracts';
 
 @Injectable()
 export class MockAgentProvider implements WorkOrderAgentProvider {
@@ -14,11 +18,20 @@ export class MockAgentProvider implements WorkOrderAgentProvider {
     context: WorkOrderAgentContext,
   ): GeneratedWorkOrderOutput {
     const path = this.filePathFor(context);
+    const contract = agentArtifactContractFor(context.workOrder.agentType);
     return {
       filePath: path.filePath,
       displayName: `${context.workOrder.title} output`,
       language: path.language,
       content: this.contentFor(context),
+      metadata: {
+        providerMode: this.mode,
+        contractVersion: ORCHESTRATION_CONTRACT_VERSION,
+        agentType: context.workOrder.agentType,
+        agentSlug: contract.slug,
+        nodeName: contract.nodeName,
+        handoffChecklist: contract.handoffChecklist,
+      },
     };
   }
 
@@ -27,20 +40,8 @@ export class MockAgentProvider implements WorkOrderAgentProvider {
     language: string;
   } {
     const base = `work-orders/${context.workOrder.id}`;
-    switch (context.workOrder.agentType) {
-      case WorkOrderAgentType.FRONTEND:
-        return { filePath: `${base}/frontend-output.tsx`, language: 'typescript' };
-      case WorkOrderAgentType.BACKEND:
-        return { filePath: `${base}/backend-output.ts`, language: 'typescript' };
-      case WorkOrderAgentType.DATABASE:
-        return { filePath: `${base}/database-output.sql`, language: 'sql' };
-      case WorkOrderAgentType.ARCHITECTURE:
-        return { filePath: `${base}/architecture-output.md`, language: 'markdown' };
-      case WorkOrderAgentType.CONTRACT:
-        return { filePath: `${base}/contract-output.md`, language: 'markdown' };
-      default:
-        return { filePath: `${base}/agent-output.md`, language: 'markdown' };
-    }
+    const contract = agentArtifactContractFor(context.workOrder.agentType);
+    return { filePath: `${base}/${contract.fileName}`, language: contract.language };
   }
 
   private contentFor(context: WorkOrderAgentContext): string {
@@ -127,6 +128,7 @@ export class MockAgentProvider implements WorkOrderAgentProvider {
       `Project: ${context.project.companyName}`,
       `Stack: ${context.project.stackKey}`,
       `Execution run: ${context.executionRunId}`,
+      `Contract: ${ORCHESTRATION_CONTRACT_VERSION}`,
       '',
       '## Objective',
       context.workOrder.instructions ?? 'Define the architecture output for this work order.',
@@ -146,6 +148,7 @@ export class MockAgentProvider implements WorkOrderAgentProvider {
       '',
       `Company: ${context.project.companyName}`,
       `Priority: ${context.workOrder.priority}`,
+      `Contract: ${ORCHESTRATION_CONTRACT_VERSION}`,
       '',
       '## Scope',
       context.workOrder.instructions ?? 'No explicit scope provided.',
@@ -165,6 +168,7 @@ export class MockAgentProvider implements WorkOrderAgentProvider {
       `Execution run: ${context.executionRunId}`,
       `Work order: ${context.workOrder.id}`,
       `Agent: ${context.workOrder.agentType}`,
+      `Contract: ${ORCHESTRATION_CONTRACT_VERSION}`,
       '',
       '## Instructions',
       context.workOrder.instructions ?? 'No explicit instructions were provided.',

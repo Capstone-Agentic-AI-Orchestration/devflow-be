@@ -113,8 +113,22 @@ async function apiDelete(path, token, expectedStatus = 200) {
   });
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function includesProject(projects) {
   return Array.isArray(projects) && projects.some((project) => project.id === projectId);
+}
+
+async function waitForOrchestrationRun(runId, token) {
+  for (let attempt = 0; attempt < 24; attempt += 1) {
+    const run = await apiGet(`/projects/${projectId}/orchestration/runs/${runId}`, token);
+    if (run.status !== 'RUNNING') return run;
+    await sleep(500);
+  }
+
+  throw new Error(`Orchestration run ${runId} did not finish before smoke timeout.`);
 }
 
 function workOrderAgentTypeFromArtifact(artifact) {
@@ -205,6 +219,9 @@ async function smoke() {
   assertCheck(postDispatchEvents.some((event) => event.eventType === 'COMPLETED' && event.costMeta?.workOrderId === dispatchableWorkOrder.id), 'Work-order execution should record a COMPLETED event log.');
   const orchestrationRunsAfterDispatch = await apiGet(`/projects/${projectId}/orchestration/runs`, pmToken);
   assertCheck(orchestrationRunsAfterDispatch.some((run) => run.executions?.some((execution) => execution.executionRunId === executedWorkOrder.executionRunId)), 'PM should see durable run history for manual work-order dispatch.');
+  const dispatchExecution = orchestrationRunsAfterDispatch.flatMap((run) => run.executions ?? []).find((execution) => execution.executionRunId === executedWorkOrder.executionRunId);
+  assertCheck(dispatchExecution?.metadata?.contract?.version === 'mock-work-order-v1', 'Manual dispatch execution should expose the mock work-order contract version.');
+  assertCheck(dispatchExecution?.metadata?.providerMode === 'mock', 'Manual dispatch execution should expose the active mock provider.');
   await apiGet(`/projects/${projectId}/orchestration/runs`, clientToken, 403);
 
   await apiPost(`/projects/${projectId}/work-orders/${dispatchableWorkOrder.id}/dispatch`, devToken, {}, 403);
@@ -233,6 +250,30 @@ async function smoke() {
   assertCheck(retriedArtifact?.validationStatus === 'PASSED', `Retried work-order artifact should pass contract validation, got ${retriedArtifact?.validationStatus}.`);
   const retryRuns = await apiGet(`/projects/${projectId}/orchestration/runs`, pmToken);
   assertCheck(retryRuns.some((run) => run.trigger === 'RETRY_FAILED_WORK_ORDER' && run.executions?.some((execution) => execution.workOrderId === retrySeedWorkOrder.id && execution.status === 'SUCCEEDED')), 'Run history should record the failed-work-order retry execution.');
+  const retryExecution = retryRuns.flatMap((run) => run.executions ?? []).find((execution) => execution.workOrderId === retrySeedWorkOrder.id && execution.status === 'SUCCEEDED');
+  assertCheck(retryExecution?.metadata?.contract?.nodeName === 'work_order_frontend', 'Retry execution should retain the frontend agent contract node.');
+
+  const rerunSeedTask = await apiPost(`/projects/${projectId}/tasks`, pmToken, {
+    title: 'Smoke parent run seed task',
+    description: 'Creates a ready work order so rerun-ready can prove executions stay attached to the parent run.',
+    assignedToId: devMe.id,
+  });
+  const rerunSeedWorkOrder = await apiPost(`/projects/${projectId}/work-orders`, pmToken, {
+    title: 'Smoke parent run handoff',
+    instructions: 'Rerun-ready should execute this work order and attach its execution to the parent orchestration run.',
+    agentType: 'DATABASE',
+    priority: 'NORMAL',
+    taskId: rerunSeedTask.id,
+  });
+  await apiPatch(`/projects/${projectId}/work-orders/${rerunSeedWorkOrder.id}`, pmToken, {
+    status: 'READY',
+  });
+  const rerunAccepted = await apiPost(`/projects/${projectId}/orchestration/rerun-ready`, pmToken, {}, 202);
+  assertCheck(Boolean(rerunAccepted.runId), 'Rerun-ready should return a parent orchestration run id.');
+  const rerunParentRun = await waitForOrchestrationRun(rerunAccepted.runId, pmToken);
+  assertCheck(rerunParentRun.status === 'SUCCEEDED', `Rerun-ready parent run should succeed, got ${rerunParentRun.status}.`);
+  assertCheck(rerunParentRun.trigger === 'RERUN_READY_WORK_ORDERS', `Rerun-ready parent run should preserve trigger, got ${rerunParentRun.trigger}.`);
+  assertCheck(rerunParentRun.executions?.some((execution) => execution.workOrderId === rerunSeedWorkOrder.id && execution.metadata?.contract?.nodeName === 'work_order_database'), 'Rerun-ready work-order execution should be attached to the parent run with database contract metadata.');
 
   const publishedOutput = await apiPost(`/projects/${projectId}/artifacts/${executedWorkOrder.artifactId}/publish`, pmToken, {
     displayName: 'Smoke published work-order output',
