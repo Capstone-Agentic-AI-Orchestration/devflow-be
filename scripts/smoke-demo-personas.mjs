@@ -117,6 +117,13 @@ function includesProject(projects) {
   return Array.isArray(projects) && projects.some((project) => project.id === projectId);
 }
 
+function workOrderAgentTypeFromArtifact(artifact) {
+  const normalized = String(artifact?.agentType ?? '').toUpperCase();
+  return ['FRONTEND', 'BACKEND', 'DATABASE', 'ARCHITECTURE', 'CONTRACT'].includes(normalized)
+    ? normalized
+    : 'FRONTEND';
+}
+
 async function smoke() {
   const pmToken = await signIn(personas.PM);
   const devToken = await signIn(personas.DEV);
@@ -211,10 +218,50 @@ async function smoke() {
     reviewNote: 'Smoke test client revision on published output.',
   });
   assertCheck(clientRevision.reviewStatus === 'REVISION_REQUESTED', 'CLIENT should be able to request revision on the published output.');
+  const revisionTask = await apiPost(`/projects/${projectId}/tasks`, pmToken, {
+    title: 'Smoke revision task from client output review',
+    description: clientRevision.reviewNote,
+    assignedToId: devMe.id,
+    artifactId: publishedOutput.id,
+  });
+  assertCheck(revisionTask.artifactId === publishedOutput.id, 'PM-created revision task should stay linked to the revised artifact.');
+  assertCheck(revisionTask.assignedToId === devMe.id, 'PM-created revision task should be assigned to the DEV persona.');
+  const revisionWorkOrder = await apiPost(`/projects/${projectId}/work-orders`, pmToken, {
+    title: 'Smoke revision handoff',
+    instructions: `Client revision request:\n${clientRevision.reviewNote}`,
+    agentType: workOrderAgentTypeFromArtifact(publishedOutput),
+    priority: 'HIGH',
+    taskId: revisionTask.id,
+    artifactId: publishedOutput.id,
+  });
+  const readyRevisionWorkOrder = await apiPatch(`/projects/${projectId}/work-orders/${revisionWorkOrder.id}`, pmToken, {
+    status: 'READY',
+  });
+  assertCheck(readyRevisionWorkOrder.status === 'READY', 'PM should be able to mark revision work order READY.');
+  const devRevisionWorkOrders = await apiGet(`/projects/${projectId}/work-orders`, devToken);
+  assertCheck(devRevisionWorkOrders.some((workOrder) => workOrder.id === readyRevisionWorkOrder.id), 'DEV should see the revision work order assigned through the revision task.');
+  const executedRevisionWorkOrder = await apiPost(`/projects/${projectId}/work-orders/${readyRevisionWorkOrder.id}/dispatch`, pmToken, {}, 202);
+  assertCheck(executedRevisionWorkOrder.status === 'COMPLETED', `Revision work order should complete through mock agents, got ${executedRevisionWorkOrder.status}.`);
+  assertCheck(Boolean(executedRevisionWorkOrder.artifactId), 'Revision work order should produce a revised artifact.');
+  const revisedOutput = await apiPost(`/projects/${projectId}/artifacts/${executedRevisionWorkOrder.artifactId}/publish`, pmToken, {
+    displayName: 'Smoke revised published output',
+  }, 200);
+  assertCheck(revisedOutput.clientVisible === true, 'PM should be able to publish the revised generated output.');
+  const clientApprovedRevision = await apiPost(`/projects/${projectId}/artifacts/${revisedOutput.id}/review`, clientToken, {
+    reviewStatus: 'APPROVED',
+    reviewNote: 'Smoke test client approval on revised output.',
+  });
+  assertCheck(clientApprovedRevision.reviewStatus === 'APPROVED', 'CLIENT should be able to approve the revised published output.');
   const handledRevision = await apiPatch(`/projects/${projectId}/artifacts/${publishedOutput.id}/revision`, pmToken, {
-    resolutionNote: 'Smoke test PM acknowledged published-output revision.',
+    resolutionNote: 'Smoke test PM routed the revision into DEV work and published a revised output.',
   });
   assertCheck(Boolean(handledRevision.revisionHandledAt), 'PM should be able to handle the client revision on the published output.');
+  const pmTimelineAfterRevision = await apiGet(`/projects/${projectId}/timeline`, pmToken);
+  assertCheck(pmTimelineAfterRevision.some((event) => event.type === 'WORK_ORDER_CREATED' && event.artifactId === publishedOutput.id), 'PM timeline should include the revision work order creation.');
+  assertCheck(pmTimelineAfterRevision.some((event) => event.type === 'ARTIFACT_PUBLISHED' && event.artifactId === revisedOutput.id), 'PM timeline should include the revised output publication.');
+  assertCheck(pmTimelineAfterRevision.some((event) => event.type === 'REVISION_HANDLED' && event.artifactId === publishedOutput.id), 'PM timeline should include revision handling.');
+  const pmNotificationsAfterRevision = await apiGet('/notifications', pmToken);
+  assertCheck(pmNotificationsAfterRevision.some((notification) => notification.type === 'ARTIFACT_REVIEWED' && notification.artifactId === publishedOutput.id), 'PM notifications should include the client revision review.');
 
   const clientThread = clientConversations[0];
   assertCheck(clientThread, 'CLIENT should have a client-visible conversation.');
