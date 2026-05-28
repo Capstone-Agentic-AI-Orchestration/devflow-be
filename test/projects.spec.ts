@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { BadRequestException, NotFoundException } from '@nestjs/common';
-import { ArtifactOutputReviewStatus, ArtifactReviewStatus, CollaborationDocumentStatus, NotificationType, ProjectDeliveryReviewStatus, ProjectKickoffStatus, ProjectStatus, ProjectTimelineEventType, ProjectTimelineVisibility, ProjectTaskActivityType, ProjectTaskStatus, UserRole, WorkOrderAgentType, WorkOrderPriority, WorkOrderStatus } from '@prisma/client';
+import { ArtifactOutputReviewStatus, ArtifactReviewStatus, CollaborationDocumentStatus, NotificationType, OrchestrationRunTrigger, ProjectDeliveryReviewStatus, ProjectKickoffStatus, ProjectStatus, ProjectTimelineEventType, ProjectTimelineVisibility, ProjectTaskActivityType, ProjectTaskStatus, UserRole, WorkOrderAgentType, WorkOrderPriority, WorkOrderStatus } from '@prisma/client';
 import { ProjectsService } from '../src/projects/projects.service';
 import { PrismaService } from '../src/prisma/prisma.service';
 import { OrchestrationService } from '../src/orchestration/orchestration.service';
@@ -93,6 +93,10 @@ function makePrismaMock() {
       findFirst: vi.fn(),
       create: vi.fn(),
       update: vi.fn(),
+    },
+    orchestrationRun: {
+      findMany: vi.fn().mockResolvedValue([]),
+      findFirst: vi.fn(),
     },
     projectTimelineEvent: {
       findMany: vi.fn().mockResolvedValue([]),
@@ -1697,6 +1701,117 @@ describe('ProjectsService', () => {
 
     expect(prisma.workOrder.update).not.toHaveBeenCalled();
     expect(orchestration.executeWorkOrder).not.toHaveBeenCalled();
+  });
+
+  it('retryFailedWorkOrder queues and executes a failed work order', async () => {
+    prisma.project.findFirst.mockResolvedValue({ id: 'project-1' });
+    prisma.workOrder.findFirst
+      .mockResolvedValueOnce({
+        id: 'work-order-1',
+        projectId: 'project-1',
+        taskId: 'task-1',
+        artifactId: 'artifact-1',
+        title: 'Retry dashboard handoff',
+        instructions: 'Retry the failed output.',
+        agentType: WorkOrderAgentType.FRONTEND,
+        status: WorkOrderStatus.FAILED,
+        priority: WorkOrderPriority.HIGH,
+        executionError: 'Mock failure',
+        task: {
+          id: 'task-1',
+          title: 'Implement dashboard',
+          assignedToId: devUser.id,
+          status: ProjectTaskStatus.TODO,
+        },
+        artifact: null,
+        createdBy: null,
+      })
+      .mockResolvedValueOnce({
+        id: 'work-order-1',
+        projectId: 'project-1',
+        taskId: 'task-1',
+        artifactId: 'artifact-generated-1',
+        title: 'Retry dashboard handoff',
+        instructions: 'Retry the failed output.',
+        agentType: WorkOrderAgentType.FRONTEND,
+        status: WorkOrderStatus.COMPLETED,
+        priority: WorkOrderPriority.HIGH,
+        executionRunId: 'work-order-run-1',
+        executionAttempt: 2,
+        executionError: null,
+        task: {
+          id: 'task-1',
+          title: 'Implement dashboard',
+          assignedToId: devUser.id,
+          status: ProjectTaskStatus.IN_REVIEW,
+        },
+        artifact: {
+          id: 'artifact-generated-1',
+          filePath: 'work-orders/work-order-1/frontend-output.tsx',
+          displayName: 'Retry dashboard handoff output',
+          reviewStatus: ArtifactReviewStatus.PENDING,
+          outputReviewStatus: ArtifactOutputReviewStatus.PENDING,
+        },
+        createdBy: null,
+      });
+    prisma.workOrder.update.mockResolvedValue({
+      id: 'work-order-1',
+      projectId: 'project-1',
+      status: WorkOrderStatus.READY,
+    });
+
+    const result = await service.retryFailedWorkOrder('project-1', 'work-order-1', pmUser);
+
+    expect(result.status).toBe(WorkOrderStatus.COMPLETED);
+    expect(prisma.workOrder.update).toHaveBeenCalledWith({
+      where: { id: 'work-order-1' },
+      data: {
+        status: WorkOrderStatus.READY,
+        executionError: null,
+        failedAt: null,
+      },
+      include: expect.any(Object),
+    });
+    expect(orchestration.executeWorkOrder).toHaveBeenCalledWith(
+      'project-1',
+      'work-order-1',
+      pmUser.id,
+      expect.objectContaining({
+        trigger: OrchestrationRunTrigger.RETRY_FAILED_WORK_ORDER,
+      }),
+    );
+  });
+
+  it('findOrchestrationRuns returns durable run history with executions', async () => {
+    prisma.project.findFirst.mockResolvedValue({ id: 'project-1' });
+    prisma.orchestrationRun.findMany.mockResolvedValue([
+      {
+        id: 'orchestration-run-1',
+        projectId: 'project-1',
+        runId: 'run-1',
+        status: 'SUCCEEDED',
+        trigger: 'START',
+        executions: [
+          {
+            id: 'execution-1',
+            executionRunId: 'work-order-run-1',
+            status: 'SUCCEEDED',
+            workOrder: { id: 'work-order-1', title: 'Build shell', status: WorkOrderStatus.COMPLETED, agentType: WorkOrderAgentType.FRONTEND },
+            artifact: { id: 'artifact-1', filePath: 'work-orders/work-order-1/frontend-output.tsx', displayName: 'Build shell output' },
+          },
+        ],
+      },
+    ]);
+
+    const runs = await service.findOrchestrationRuns('project-1', pmUser);
+
+    expect(runs).toHaveLength(1);
+    expect(prisma.orchestrationRun.findMany).toHaveBeenCalledWith({
+      where: { projectId: 'project-1' },
+      include: expect.any(Object),
+      orderBy: { createdAt: 'desc' },
+      take: 20,
+    });
   });
 
   it('reviewArtifact rejects unshared artifacts', async () => {

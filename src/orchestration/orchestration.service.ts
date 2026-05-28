@@ -27,6 +27,8 @@ import { MockAgentProvider } from './providers/mock-agent.provider';
 import { AgentProviderMode } from './providers/agent-provider.types';
 import {
   NotificationType,
+  OrchestrationRunStatus,
+  OrchestrationRunTrigger,
   Prisma,
   ProjectStatus,
   ProjectTaskActivityType,
@@ -34,6 +36,7 @@ import {
   ProjectTimelineEventType,
   ProjectTimelineVisibility,
   WorkOrderAgentType,
+  WorkOrderExecutionStatus,
   WorkOrderStatus,
 } from '@prisma/client';
 
@@ -66,6 +69,9 @@ export interface WorkOrderExecutionResult {
 
 interface WorkOrderExecutionOptions {
   emitLifecycleEvents?: boolean;
+  parentRunId?: string;
+  trigger?: OrchestrationRunTrigger;
+  allowFailedRetry?: boolean;
 }
 
 const MOCK_NODE = {
@@ -183,6 +189,7 @@ export class OrchestrationService implements OnModuleInit {
     stackKey: string,
     companyName: string,
     actorId?: string,
+    trigger: OrchestrationRunTrigger = OrchestrationRunTrigger.START,
   ): Promise<string> {
     const runId = createId();
 
@@ -193,6 +200,29 @@ export class OrchestrationService implements OnModuleInit {
     await this.prisma.project.update({
       where: { id: projectId },
       data: { runId },
+    });
+
+    const readyWorkOrders = await this.prisma.workOrder.count({
+      where: {
+        projectId,
+        status: WorkOrderStatus.READY,
+        instructions: { not: null },
+      },
+    });
+
+    await this.prisma.orchestrationRun.create({
+      data: {
+        projectId,
+        runId,
+        providerMode: this.agentProviderMode(),
+        trigger,
+        status: OrchestrationRunStatus.RUNNING,
+        currentNode: this.agentProviderMode() === 'mock'
+          ? MOCK_NODE.LOAD_READY_WORK_ORDERS
+          : 'parse_requirements',
+        actorId: actorId ?? null,
+        readyWorkOrders,
+      },
     });
 
     // Initialise run budget (Phase 2B)
@@ -214,6 +244,7 @@ export class OrchestrationService implements OnModuleInit {
         this.logger.error(
           `Mock orchestration run ${runId} for project ${projectId} failed: ${message}`,
         );
+        void this.markRunFailed(runId, MOCK_NODE.FINALIZE, message);
       });
 
       this.gateway?.emitStatusUpdate(
@@ -238,6 +269,7 @@ export class OrchestrationService implements OnModuleInit {
       this.logger.error(
         `Graph run ${runId} for project ${projectId} encountered an error: ${message}`,
       );
+      void this.markRunFailed(runId, 'graph', message);
     });
 
     // Notify subscribers that the graph has started and is parsing requirements
@@ -530,6 +562,13 @@ export class OrchestrationService implements OnModuleInit {
 
     const attempt = workOrder.executionAttempt + 1;
     const nodeName = this.workOrderNodeName(workOrder.agentType);
+    const orchestrationRun = await this.findOrCreateWorkOrderRun(projectId, {
+      runId: options.parentRunId ?? executionRunId,
+      executionRunId,
+      trigger: options.trigger ?? OrchestrationRunTrigger.WORK_ORDER_DISPATCH,
+      actorId,
+      currentNode: nodeName,
+    });
 
     await this.prisma.workOrder.update({
       where: { id: workOrderId },
@@ -543,6 +582,28 @@ export class OrchestrationService implements OnModuleInit {
         executionError: null,
         lastEventAt: startedAt,
       },
+    });
+
+    await this.prisma.workOrderExecution.create({
+      data: {
+        projectId,
+        orchestrationRunId: orchestrationRun.id,
+        workOrderId,
+        executionRunId,
+        attempt,
+        agentType: workOrder.agentType,
+        status: WorkOrderExecutionStatus.RUNNING,
+        startedAt,
+        metadata: {
+          trigger: options.trigger ?? OrchestrationRunTrigger.WORK_ORDER_DISPATCH,
+          sourceArtifactId: workOrder.artifactId,
+        },
+      },
+    });
+
+    await this.updateRunProgress(orchestrationRun.id, {
+      currentNode: nodeName,
+      status: OrchestrationRunStatus.RUNNING,
     });
 
     if (options.emitLifecycleEvents) {
@@ -666,6 +727,22 @@ export class OrchestrationService implements OnModuleInit {
         },
       });
 
+      await Promise.all([
+        this.prisma.workOrderExecution.update({
+          where: { executionRunId },
+          data: {
+            status: WorkOrderExecutionStatus.SUCCEEDED,
+            artifactId: artifact.id,
+            completedAt,
+          },
+        }),
+        this.incrementRunCompletion(orchestrationRun.id, {
+          artifactId: artifact.id,
+          currentNode: nodeName,
+          completeRun: !options.parentRunId,
+        }),
+      ]);
+
       if (options.emitLifecycleEvents) {
         await Promise.all([
           this.recordWorkOrderTimelineEvent(projectId, actorId, {
@@ -722,6 +799,21 @@ export class OrchestrationService implements OnModuleInit {
           occurredAt: failedAt,
         },
       });
+      await Promise.all([
+        this.prisma.workOrderExecution.update({
+          where: { executionRunId },
+          data: {
+            status: WorkOrderExecutionStatus.FAILED,
+            error: message,
+            completedAt: failedAt,
+          },
+        }),
+        this.incrementRunFailure(orchestrationRun.id, {
+          error: message,
+          currentNode: nodeName,
+          completeRun: !options.parentRunId,
+        }),
+      ]);
       this.gateway?.emitStatusUpdate(projectId, 'FAILED', nodeName, message);
       throw error;
     }
@@ -878,6 +970,18 @@ export class OrchestrationService implements OnModuleInit {
             },
           },
         }),
+        this.prisma.orchestrationRun.updateMany({
+          where: { projectId: state.projectId, runId: state.runId },
+          data: {
+            status: failed ? OrchestrationRunStatus.FAILED : OrchestrationRunStatus.SUCCEEDED,
+            currentNode: MOCK_NODE.FINALIZE,
+            error: failed ? state.error : null,
+            completedWorkOrders: state.completedArtifactIds.length,
+            failedWorkOrders: state.failedWorkOrderIds.length,
+            completedArtifacts: state.completedArtifactIds.length,
+            completedAt,
+          },
+        }),
       ]);
 
       if (!failed) {
@@ -929,6 +1033,105 @@ export class OrchestrationService implements OnModuleInit {
       );
     }
     return project.runId;
+  }
+
+  private async findOrCreateWorkOrderRun(
+    projectId: string,
+    input: {
+      runId: string;
+      executionRunId: string;
+      trigger: OrchestrationRunTrigger;
+      actorId?: string;
+      currentNode: string;
+    },
+  ): Promise<{ id: string }> {
+    const existing = await this.prisma.orchestrationRun.findUnique({
+      where: { runId: input.runId },
+      select: { id: true },
+    });
+
+    if (existing) {
+      await this.prisma.orchestrationRun.update({
+        where: { id: existing.id },
+        data: {
+          currentNode: input.currentNode,
+          status: OrchestrationRunStatus.RUNNING,
+        },
+      });
+      return existing;
+    }
+
+    return this.prisma.orchestrationRun.create({
+      data: {
+        projectId,
+        runId: input.executionRunId,
+        providerMode: this.agentProviderMode(),
+        trigger: input.trigger,
+        status: OrchestrationRunStatus.RUNNING,
+        currentNode: input.currentNode,
+        actorId: input.actorId ?? null,
+        readyWorkOrders: 1,
+      },
+      select: { id: true },
+    });
+  }
+
+  private async updateRunProgress(
+    id: string,
+    data: Prisma.OrchestrationRunUpdateInput,
+  ): Promise<void> {
+    await this.prisma.orchestrationRun.update({
+      where: { id },
+      data,
+    });
+  }
+
+  private async incrementRunCompletion(
+    id: string,
+    input: { artifactId: string; currentNode: string; completeRun: boolean },
+  ): Promise<void> {
+    await this.prisma.orchestrationRun.update({
+      where: { id },
+      data: {
+        currentNode: input.currentNode,
+        completedWorkOrders: { increment: 1 },
+        completedArtifacts: { increment: 1 },
+        status: input.completeRun ? OrchestrationRunStatus.SUCCEEDED : undefined,
+        completedAt: input.completeRun ? new Date() : undefined,
+      },
+    });
+  }
+
+  private async incrementRunFailure(
+    id: string,
+    input: { error: string; currentNode: string; completeRun: boolean },
+  ): Promise<void> {
+    await this.prisma.orchestrationRun.update({
+      where: { id },
+      data: {
+        currentNode: input.currentNode,
+        failedWorkOrders: { increment: 1 },
+        error: input.error,
+        status: input.completeRun ? OrchestrationRunStatus.FAILED : undefined,
+        completedAt: input.completeRun ? new Date() : undefined,
+      },
+    });
+  }
+
+  private async markRunFailed(
+    runId: string,
+    currentNode: string,
+    error: string,
+  ): Promise<void> {
+    await this.prisma.orchestrationRun.updateMany({
+      where: { runId },
+      data: {
+        status: OrchestrationRunStatus.FAILED,
+        currentNode,
+        error,
+        completedAt: new Date(),
+      },
+    });
   }
 
   private getCurrentNode(checkpoint: unknown): string {

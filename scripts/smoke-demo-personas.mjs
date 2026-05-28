@@ -194,8 +194,33 @@ async function smoke() {
   const postDispatchEvents = await apiGet(`/projects/${projectId}/events`, pmToken);
   assertCheck(postDispatchArtifacts.some((artifact) => artifact.id === executedWorkOrder.artifactId), 'Generated work-order artifact should be visible to PM artifacts.');
   assertCheck(postDispatchEvents.some((event) => event.eventType === 'COMPLETED' && event.costMeta?.workOrderId === dispatchableWorkOrder.id), 'Work-order execution should record a COMPLETED event log.');
+  const orchestrationRunsAfterDispatch = await apiGet(`/projects/${projectId}/orchestration/runs`, pmToken);
+  assertCheck(orchestrationRunsAfterDispatch.some((run) => run.executions?.some((execution) => execution.executionRunId === executedWorkOrder.executionRunId)), 'PM should see durable run history for manual work-order dispatch.');
+  await apiGet(`/projects/${projectId}/orchestration/runs`, clientToken, 403);
 
   await apiPost(`/projects/${projectId}/work-orders/${dispatchableWorkOrder.id}/dispatch`, devToken, {}, 403);
+
+  const retrySeedTask = await apiPost(`/projects/${projectId}/tasks`, pmToken, {
+    title: 'Smoke retry seed task',
+    description: 'Creates a failed work order so retry controls can be smoke-tested.',
+    assignedToId: devMe.id,
+  });
+  const retrySeedWorkOrder = await apiPost(`/projects/${projectId}/work-orders`, pmToken, {
+    title: 'Smoke retry seed handoff',
+    instructions: 'Retry path should execute this failed work order through the mock provider.',
+    agentType: 'FRONTEND',
+    priority: 'HIGH',
+    taskId: retrySeedTask.id,
+  });
+  const failedRetrySeed = await apiPatch(`/projects/${projectId}/work-orders/${retrySeedWorkOrder.id}`, pmToken, {
+    status: 'FAILED',
+  });
+  assertCheck(failedRetrySeed.status === 'FAILED', 'PM should be able to mark a test work order failed before retry.');
+  const retriedWorkOrder = await apiPost(`/projects/${projectId}/work-orders/${retrySeedWorkOrder.id}/retry`, pmToken, {}, 202);
+  assertCheck(retriedWorkOrder.status === 'COMPLETED', `Retried work order should complete through mock agents, got ${retriedWorkOrder.status}.`);
+  assertCheck(Boolean(retriedWorkOrder.artifactId), 'Retried work order should produce an artifact.');
+  const retryRuns = await apiGet(`/projects/${projectId}/orchestration/runs`, pmToken);
+  assertCheck(retryRuns.some((run) => run.trigger === 'RETRY_FAILED_WORK_ORDER' && run.executions?.some((execution) => execution.workOrderId === retrySeedWorkOrder.id && execution.status === 'SUCCEEDED')), 'Run history should record the failed-work-order retry execution.');
 
   const publishedOutput = await apiPost(`/projects/${projectId}/artifacts/${executedWorkOrder.artifactId}/publish`, pmToken, {
     displayName: 'Smoke published work-order output',

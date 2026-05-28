@@ -7,7 +7,7 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { OrchestrationService, OrchestrationStatus } from '../orchestration/orchestration.service';
 import { CreateProjectDto } from './dto/create-project.dto';
-import { ArtifactOutputReviewStatus, ArtifactReviewStatus, ClientInviteStatus, CollaborationDocumentStatus, NotificationType, ProjectDeliveryReview, ProjectDeliveryReviewStatus, ProjectStatus, ProjectTimelineEvent, ProjectTimelineEventType, ProjectTimelineVisibility, ProjectTaskActivity, ProjectTaskActivityType, ProjectTaskStatus, Project, GateEvent, Artifact, EventLog, Prisma, ProjectKickoff, ProjectKickoffStatus, ProjectTask, UserRole, WorkOrder, WorkOrderAgentType, WorkOrderPriority, WorkOrderStatus } from '@prisma/client';
+import { ArtifactOutputReviewStatus, ArtifactReviewStatus, ClientInviteStatus, CollaborationDocumentStatus, NotificationType, OrchestrationRunTrigger, ProjectDeliveryReview, ProjectDeliveryReviewStatus, ProjectStatus, ProjectTimelineEvent, ProjectTimelineEventType, ProjectTimelineVisibility, ProjectTaskActivity, ProjectTaskActivityType, ProjectTaskStatus, Project, GateEvent, Artifact, EventLog, Prisma, ProjectKickoff, ProjectKickoffStatus, ProjectTask, UserRole, WorkOrder, WorkOrderAgentType, WorkOrderPriority, WorkOrderStatus } from '@prisma/client';
 import { AuthUser } from '../auth/auth.types';
 import { UpdateProjectDto } from './dto/update-project.dto';
 import { AddProjectMemberDto } from './dto/project-member.dto';
@@ -359,6 +359,113 @@ export class ProjectsService {
     );
 
     return { accepted: true, runId };
+  }
+
+  async rerunReadyWorkOrders(
+    id: string,
+    user: AuthUser,
+  ): Promise<{ accepted: boolean; runId: string }> {
+    const project = await this.findRunnableProject(id, user);
+    const runId = await this.orchestration.startRun(
+      project.id,
+      project.brief,
+      project.stackKey,
+      project.companyName,
+      user.id,
+      OrchestrationRunTrigger.RERUN_READY_WORK_ORDERS,
+    );
+
+    return { accepted: true, runId };
+  }
+
+  async findOrchestrationRuns(id: string, user: AuthUser) {
+    await this.assertAccessible(id, user);
+
+    return this.prisma.orchestrationRun.findMany({
+      where: { projectId: id },
+      include: {
+        executions: {
+          include: {
+            workOrder: {
+              select: {
+                id: true,
+                title: true,
+                status: true,
+                agentType: true,
+              },
+            },
+            artifact: {
+              select: {
+                id: true,
+                filePath: true,
+                displayName: true,
+                outputReviewStatus: true,
+                reviewStatus: true,
+              },
+            },
+          },
+          orderBy: { startedAt: 'asc' },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 20,
+    });
+  }
+
+  async findOrchestrationRun(id: string, runId: string, user: AuthUser) {
+    await this.assertAccessible(id, user);
+
+    const run = await this.prisma.orchestrationRun.findFirst({
+      where: { projectId: id, runId },
+      include: {
+        executions: {
+          include: {
+            workOrder: {
+              select: {
+                id: true,
+                title: true,
+                status: true,
+                agentType: true,
+                priority: true,
+              },
+            },
+            artifact: {
+              select: {
+                id: true,
+                filePath: true,
+                displayName: true,
+                outputReviewStatus: true,
+                reviewStatus: true,
+                createdAt: true,
+              },
+            },
+          },
+          orderBy: { startedAt: 'asc' },
+        },
+      },
+    });
+
+    if (!run) {
+      throw new NotFoundException(`Orchestration run ${runId} not found`);
+    }
+
+    const executionRunIds = run.executions.map((execution) => execution.executionRunId);
+    const events = await this.prisma.eventLog.findMany({
+      where: {
+        projectId: id,
+        OR: [
+          { costMeta: { path: ['runId'], equals: run.runId } },
+          ...(executionRunIds.length
+            ? executionRunIds.map((executionRunId) => ({
+                costMeta: { path: ['executionRunId'], equals: executionRunId },
+              }))
+            : []),
+        ],
+      },
+      orderBy: { occurredAt: 'asc' },
+    });
+
+    return { ...run, events };
   }
 
   async findAll(user: AuthUser): Promise<ProjectListItem[]> {
@@ -1864,6 +1971,88 @@ export class ProjectsService {
     return executed;
   }
 
+  async retryFailedWorkOrder(
+    id: string,
+    workOrderId: string,
+    user: AuthUser,
+  ): Promise<WorkOrderWithRelations> {
+    await this.assertAccessible(id, user);
+
+    const current = await this.prisma.workOrder.findFirst({
+      where: { id: workOrderId, projectId: id },
+      include: workOrderInclude,
+    });
+
+    if (!current) {
+      throw new NotFoundException(`Work order ${workOrderId} not found`);
+    }
+
+    if (current.status !== WorkOrderStatus.FAILED) {
+      throw new BadRequestException('Only FAILED work orders can be retried');
+    }
+
+    if (!current.instructions?.trim()) {
+      throw new BadRequestException('Work order instructions are required before retry');
+    }
+
+    await this.prisma.workOrder.update({
+      where: { id: workOrderId },
+      data: {
+        status: WorkOrderStatus.READY,
+        executionError: null,
+        failedAt: null,
+      },
+      include: workOrderInclude,
+    });
+
+    await this.recordTimelineEvent(id, user, {
+      type: ProjectTimelineEventType.WORK_ORDER_STATUS_CHANGED,
+      visibility: ProjectTimelineVisibility.TEAM,
+      taskId: current.taskId,
+      artifactId: current.artifactId,
+      title: 'Work order retry queued',
+      body: current.title,
+      metadata: {
+        workOrderId: current.id,
+        from: WorkOrderStatus.FAILED,
+        to: WorkOrderStatus.READY,
+      },
+    });
+
+    const execution = await this.orchestration.executeWorkOrder(id, workOrderId, user.id, {
+      trigger: OrchestrationRunTrigger.RETRY_FAILED_WORK_ORDER,
+      allowFailedRetry: true,
+    });
+    const executed = await this.prisma.workOrder.findFirst({
+      where: { id: workOrderId, projectId: id },
+      include: workOrderInclude,
+    });
+
+    if (!executed) {
+      throw new NotFoundException(`Work order ${workOrderId} not found`);
+    }
+
+    await this.recordTimelineEvent(id, user, {
+      type: ProjectTimelineEventType.WORK_ORDER_STATUS_CHANGED,
+      visibility: ProjectTimelineVisibility.TEAM,
+      taskId: executed.taskId,
+      artifactId: executed.artifactId,
+      title: 'Work order retry completed',
+      body: executed.title,
+      metadata: {
+        workOrderId: executed.id,
+        from: WorkOrderStatus.READY,
+        to: executed.status,
+        executionRunId: execution.executionRunId,
+        artifactId: execution.artifactId,
+      },
+    });
+
+    await this.notifyWorkOrderStakeholders(id, user, executed, NotificationType.WORK_ORDER_STATUS_CHANGED, 'Work order retry completed');
+
+    return executed;
+  }
+
   async findEvents(id: string, user: AuthUser): Promise<EventLog[]> {
     await this.assertAccessible(id, user);
     return this.prisma.eventLog.findMany({
@@ -1958,6 +2147,44 @@ export class ProjectsService {
     if (!invite) {
       throw new BadRequestException('Client invite must be accepted before final delivery can be accepted');
     }
+  }
+
+  private async findRunnableProject(id: string, user: AuthUser): Promise<{
+    id: string;
+    companyName: string;
+    brief: string;
+    stackKey: string;
+  }> {
+    const project = await this.prisma.project.findFirst({
+      where: this.projectAccessWhere(user, id),
+      select: {
+        id: true,
+        companyName: true,
+        brief: true,
+        stackKey: true,
+        kickoff: {
+          select: { status: true },
+        },
+        workOrders: {
+          where: { status: WorkOrderStatus.READY },
+          select: { instructions: true },
+        },
+      },
+    });
+
+    if (!project) {
+      throw new NotFoundException(`Project ${id} not found`);
+    }
+
+    if (project.kickoff?.status !== ProjectKickoffStatus.READY && project.kickoff?.status !== ProjectKickoffStatus.LOCKED) {
+      throw new BadRequestException('Project kickoff must be complete before orchestration can start');
+    }
+
+    if (!project.workOrders.some((workOrder) => workOrder.instructions?.trim())) {
+      throw new BadRequestException('At least one READY work order with instructions is required before orchestration can start');
+    }
+
+    return project;
   }
 
   private deriveProjectLifecycle(project: ProjectLifecycleSource): ProjectLifecycleSummary {

@@ -34,6 +34,8 @@ model Project {
   clientInvites ClientInvite[]
   kickoff     ProjectKickoff?
   deliveryReview ProjectDeliveryReview?
+  orchestrationRuns OrchestrationRun[]
+  workOrderExecutions WorkOrderExecution[]
 
   @@index([createdById])
 }
@@ -178,6 +180,7 @@ model Artifact {
   createdAt     DateTime             @default(now())
   tasks         ProjectTask[]
   workOrders    WorkOrder[]
+  workOrderExecutions WorkOrderExecution[]
 
   @@index([projectId])
   @@index([projectId, clientVisible])
@@ -544,6 +547,26 @@ enum WorkOrderPriority {
   URGENT
 }
 
+enum OrchestrationRunStatus {
+  RUNNING
+  SUCCEEDED
+  FAILED
+  CANCELLED
+}
+
+enum OrchestrationRunTrigger {
+  START
+  RERUN_READY_WORK_ORDERS
+  WORK_ORDER_DISPATCH
+  RETRY_FAILED_WORK_ORDER
+}
+
+enum WorkOrderExecutionStatus {
+  RUNNING
+  SUCCEEDED
+  FAILED
+}
+
 model WorkOrder {
   id          String             @id @default(cuid())
   projectId   String
@@ -570,6 +593,7 @@ model WorkOrder {
   failedAt     DateTime?
   createdAt    DateTime          @default(now())
   updatedAt    DateTime          @updatedAt
+  executions   WorkOrderExecution[]
 
   @@index([projectId, status])
   @@index([taskId])
@@ -578,6 +602,61 @@ model WorkOrder {
   @@index([executionRunId])
   @@index([status, lastEventAt])
   @@map("work_orders")
+}
+
+model OrchestrationRun {
+  id              String                  @id @default(cuid())
+  projectId       String
+  project         Project                 @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  runId           String                  @unique
+  providerMode    String                  @default("mock")
+  trigger         OrchestrationRunTrigger @default(START)
+  status          OrchestrationRunStatus  @default(RUNNING)
+  currentNode     String?
+  error           String?                 @db.Text
+  actorId         String?                 @db.Uuid
+  readyWorkOrders Int                     @default(0)
+  completedWorkOrders Int                 @default(0)
+  failedWorkOrders Int                    @default(0)
+  completedArtifacts Int                  @default(0)
+  startedAt       DateTime                @default(now())
+  completedAt     DateTime?
+  createdAt       DateTime                @default(now())
+  updatedAt       DateTime                @updatedAt
+  executions      WorkOrderExecution[]
+
+  @@index([projectId, createdAt])
+  @@index([projectId, status])
+  @@index([actorId])
+  @@map("orchestration_runs")
+}
+
+model WorkOrderExecution {
+  id                 String                   @id @default(cuid())
+  projectId          String
+  project            Project                  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  orchestrationRunId String?
+  orchestrationRun   OrchestrationRun?        @relation(fields: [orchestrationRunId], references: [id], onDelete: SetNull)
+  workOrderId        String
+  workOrder          WorkOrder                @relation(fields: [workOrderId], references: [id], onDelete: Cascade)
+  artifactId         String?
+  artifact           Artifact?                @relation(fields: [artifactId], references: [id], onDelete: SetNull)
+  executionRunId     String                   @unique
+  attempt            Int
+  agentType          WorkOrderAgentType
+  status             WorkOrderExecutionStatus @default(RUNNING)
+  error              String?                  @db.Text
+  startedAt          DateTime                 @default(now())
+  completedAt        DateTime?
+  createdAt          DateTime                 @default(now())
+  updatedAt          DateTime                 @updatedAt
+  metadata           Json                     @default("{}")
+
+  @@index([projectId, startedAt])
+  @@index([orchestrationRunId])
+  @@index([workOrderId])
+  @@index([artifactId])
+  @@map("work_order_executions")
 }
 
 enum ProjectTimelineVisibility {

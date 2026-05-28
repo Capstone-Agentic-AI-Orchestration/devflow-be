@@ -330,6 +330,17 @@ export class ProjectsController {
     return this.projectsService.dispatchWorkOrder(id, workOrderId, user);
   }
 
+  @Post(':id/work-orders/:workOrderId/retry')
+  @Roles(UserRole.PM, UserRole.ADMIN)
+  @HttpCode(HttpStatus.ACCEPTED)
+  retryWorkOrder(
+    @Param('id') id: string,
+    @Param('workOrderId') workOrderId: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.projectsService.retryFailedWorkOrder(id, workOrderId, user);
+  }
+
   @Get(':id/events')
   @Roles(UserRole.PM, UserRole.DEV, UserRole.ADMIN)
   findEvents(@Param('id') id: string, @CurrentUser() user: AuthUser) {
@@ -353,6 +364,29 @@ export class ProjectsController {
   @Roles(UserRole.CLIENT, UserRole.PM, UserRole.DEV, UserRole.ADMIN)
   getOrchestrationStatus(@Param('id') id: string, @CurrentUser() user: AuthUser) {
     return this.projectsService.getStatus(id, user);
+  }
+
+  @Get(':id/orchestration/runs')
+  @Roles(UserRole.PM, UserRole.DEV, UserRole.ADMIN)
+  findOrchestrationRuns(@Param('id') id: string, @CurrentUser() user: AuthUser) {
+    return this.projectsService.findOrchestrationRuns(id, user);
+  }
+
+  @Get(':id/orchestration/runs/:runId')
+  @Roles(UserRole.PM, UserRole.DEV, UserRole.ADMIN)
+  findOrchestrationRun(
+    @Param('id') id: string,
+    @Param('runId') runId: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.projectsService.findOrchestrationRun(id, runId, user);
+  }
+
+  @Post(':id/orchestration/rerun-ready')
+  @Roles(UserRole.PM, UserRole.ADMIN)
+  @HttpCode(HttpStatus.ACCEPTED)
+  rerunReadyWorkOrders(@Param('id') id: string, @CurrentUser() user: AuthUser) {
+    return this.projectsService.rerunReadyWorkOrders(id, user);
   }
 
   @Post(':id/gates/architecture')

@@ -81,7 +81,18 @@ function makePrismaMock() {
     },
     workOrder: {
       findFirst: vi.fn(),
+      count: vi.fn().mockResolvedValue(1),
       update: vi.fn().mockResolvedValue({}),
+    },
+    orchestrationRun: {
+      create: vi.fn().mockResolvedValue({ id: 'orchestration-run-1' }),
+      findUnique: vi.fn().mockResolvedValue(null),
+      update: vi.fn().mockResolvedValue({}),
+      updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+    },
+    workOrderExecution: {
+      create: vi.fn().mockResolvedValue({ id: 'execution-1' }),
+      update: vi.fn().mockResolvedValue({ id: 'execution-1' }),
     },
     runBudget: {
       create: vi.fn().mockResolvedValue({}),
@@ -210,6 +221,13 @@ describe('OrchestrationService', () => {
     expect(prisma.project.update).toHaveBeenCalledWith({
       where: { id: 'test-project-id' },
       data: { runId },
+    });
+    expect(prisma.orchestrationRun.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        projectId: 'test-project-id',
+        runId,
+        status: 'RUNNING',
+      }),
     });
   });
 
@@ -345,6 +363,17 @@ describe('OrchestrationService', () => {
         nodeName: 'work_order_frontend',
         eventType: 'STARTED',
         costMeta: expect.objectContaining({ workOrderId: 'work-order-1' }),
+      }),
+    });
+    expect(prisma.workOrderExecution.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        projectId: 'test-project-id',
+        orchestrationRunId: 'orchestration-run-1',
+        workOrderId: 'work-order-1',
+        executionRunId: expect.any(String),
+        attempt: 1,
+        agentType: WorkOrderAgentType.FRONTEND,
+        status: 'RUNNING',
       }),
     });
     expect(prisma.artifact.create).toHaveBeenCalledWith({
