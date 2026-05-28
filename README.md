@@ -54,14 +54,21 @@ OPENROUTER_API_KEY=""
 OPENROUTER_BASE_URL="https://openrouter.ai/api/v1"
 OPENROUTER_MODEL="deepseek/deepseek-v4-flash:free"
 OPENROUTER_FALLBACK_MODEL="nvidia/nemotron-3-nano-30b-a3b:free"
+OPENAI_BASE_URL="https://api.openai.com/v1"
+OPENAI_MODEL="gpt-4.1-mini"
+OPENAI_FALLBACK_MODEL=""
+OPENAI_API_KEY=""
+ANTHROPIC_BASE_URL="https://api.anthropic.com/v1"
+ANTHROPIC_MODEL="claude-3-5-haiku-20241022"
+ANTHROPIC_FALLBACK_MODEL=""
+ANTHROPIC_VERSION="2023-06-01"
+ANTHROPIC_API_KEY=""
 PORT=4000
 NODE_ENV="development"
 CORS_ORIGIN="http://localhost:3000"
 SUPABASE_SERVICE_ROLE_KEY=""
 SUPABASE_ANON_KEY=""
-# Legacy/alternate provider keys. The LangGraph and work-order agents use OpenRouter by default.
-# ANTHROPIC_API_KEY=""
-# OPENAI_API_KEY=""
+# Alternate provider keys. The LangGraph and work-order agents use OpenRouter by default.
 GITHUB_APP_ID=""
 GITHUB_PRIVATE_KEY=""
 GITHUB_INSTALLATION_ID=""
@@ -73,7 +80,7 @@ LANGCHAIN_PROJECT="devflow"
 
 `SUPABASE_SERVICE_ROLE_KEY` is server-side only. Never expose it to `devlow-frontend`.
 
-`AGENT_PROVIDER=mock` runs the deterministic local orchestration provider and does not require LLM or GitHub credentials. Use `AGENT_PROVIDER=llm` with `LLM_PROVIDER=openrouter` and `OPENROUTER_API_KEY` to run real LangGraph and work-order artifact generation through OpenRouter. The default real model is `deepseek/deepseek-v4-flash:free`; `OPENROUTER_FALLBACK_MODEL` gives local runs a second free model when DeepSeek is throttled.
+`AGENT_PROVIDER=mock` runs the deterministic local orchestration provider and does not require LLM or GitHub credentials. Use `AGENT_PROVIDER=llm` with `LLM_PROVIDER=openrouter` and `OPENROUTER_API_KEY` to run real LangGraph and work-order artifact generation through OpenRouter. If OpenRouter is throttled, `LLM_PROVIDER=openai` with `OPENAI_API_KEY` or `LLM_PROVIDER=anthropic` with `ANTHROPIC_API_KEY` uses an alternate provider instead. The default OpenRouter model is `deepseek/deepseek-v4-flash:free`; the default OpenAI model is `gpt-4.1-mini`; the default Anthropic model is `claude-3-5-haiku-20241022`.
 
 The LangGraph path defines DevFlow's own agents: requirements parser, contract negotiator, frontend, backend, database, architecture, validator, and GitHub commit. LangGraph controls ordering, parallel fan-out, retries, and human approval gates. OpenRouter only supplies the model calls inside those custom agents. After Gate 2 approval, the GitHub commit node creates a private repository through the configured GitHub App, commits generated artifacts, injects CI, and stores `repoUrl` on the project.
 

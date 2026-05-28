@@ -31,7 +31,7 @@ export class AgentProviderRegistry {
       },
       {
         mode: this.llmAgentProvider.mode,
-        displayName: 'OpenRouter LLM Provider',
+        displayName: `${this.llmAgentProvider.providerName() === 'openai' ? 'OpenAI' : 'OpenRouter'} LLM Provider`,
         active: requestedMode === this.llmAgentProvider.mode,
         available: llmAvailable,
         implemented: true,

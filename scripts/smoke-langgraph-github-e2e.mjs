@@ -76,6 +76,90 @@ async function assertOpenRouterPreflight() {
   }
 }
 
+async function assertOpenAiPreflight() {
+  if (process.env.LLM_PROVIDER !== 'openai') return;
+
+  const apiKey = process.env.OPENAI_API_KEY?.trim();
+  if (!apiKey) {
+    console.log('LangGraph GitHub E2E smoke skipped: OPENAI_API_KEY is not configured.');
+    process.exit(0);
+  }
+
+  const baseUrl = process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1';
+  const model = process.env.OPENAI_MODEL || 'gpt-4.1-mini';
+  const response = await fetch(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model,
+      messages: [
+        {
+          role: 'user',
+          content: 'Return {"ok":true} as JSON.',
+        },
+      ],
+      max_tokens: 16,
+      response_format: {
+        type: 'json_schema',
+        json_schema: {
+          name: 'langgraph_github_smoke_preflight',
+          strict: false,
+          schema: { type: 'object', additionalProperties: true },
+        },
+      },
+    }),
+  });
+
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(
+      `OpenAI preflight failed (${response.status}): ${parseOpenRouterError(body).slice(0, 500)}`,
+    );
+  }
+}
+
+async function assertAnthropicPreflight() {
+  if (process.env.LLM_PROVIDER !== 'anthropic') return;
+
+  const apiKey = process.env.ANTHROPIC_API_KEY?.trim();
+  if (!apiKey) {
+    console.log('LangGraph GitHub E2E smoke skipped: ANTHROPIC_API_KEY is not configured.');
+    process.exit(0);
+  }
+
+  const baseUrl = process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com/v1';
+  const model = process.env.ANTHROPIC_MODEL || 'claude-3-5-haiku-20241022';
+  const response = await fetch(`${baseUrl.replace(/\/$/, '')}/messages`, {
+    method: 'POST',
+    headers: {
+      'x-api-key': apiKey,
+      'anthropic-version': process.env.ANTHROPIC_VERSION || '2023-06-01',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model,
+      system: 'Return exactly one valid JSON object and no prose.',
+      messages: [
+        {
+          role: 'user',
+          content: 'Return {"ok":true}.',
+        },
+      ],
+      max_tokens: 16,
+    }),
+  });
+
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(
+      `Anthropic preflight failed (${response.status}): ${parseOpenRouterError(body).slice(0, 500)}`,
+    );
+  }
+}
+
 async function waitForProjectStatus(prisma, orchestration, projectId, expectedStatuses, timeoutMs, label) {
   const startedAt = Date.now();
   let lastProject = null;
@@ -122,6 +206,8 @@ if (process.env.LANGGRAPH_GITHUB_SMOKE_TRACE !== 'true') {
 }
 
 await assertOpenRouterPreflight();
+await assertOpenAiPreflight();
+await assertAnthropicPreflight();
 
 const [{ NestFactory }, { AppModule }, { PrismaService }, { OrchestrationService }, { GithubService }] =
   await Promise.all([

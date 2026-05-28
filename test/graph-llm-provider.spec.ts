@@ -59,6 +59,103 @@ describe('GraphLlmProvider', () => {
     expect(body.response_format).toBeUndefined();
   });
 
+  it('parses OpenAI JSON arrays for LangGraph file agents', async () => {
+    process.env.LLM_PROVIDER = 'openai';
+    process.env.OPENAI_API_KEY = 'test-openai-key';
+    process.env.OPENAI_MODEL = 'gpt-test-model';
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({
+        choices: [
+          {
+            message: {
+              content: JSON.stringify([
+                {
+                  filePath: 'ARCHITECTURE.md',
+                  content: '# Architecture',
+                  language: 'markdown',
+                },
+              ]),
+            },
+          },
+        ],
+        usage: {
+          prompt_tokens: 11,
+          completion_tokens: 22,
+        },
+      }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await new GraphLlmProvider().generateJson<Array<{ filePath: string }>>({
+      agentName: 'architecture_agent',
+      systemPrompt: 'Generate docs.',
+      userPrompt: 'Generate one doc.',
+      expectedShape: 'array',
+    });
+
+    expect(result).toEqual({
+      value: [{ filePath: 'ARCHITECTURE.md', content: '# Architecture', language: 'markdown' }],
+      model: 'gpt-test-model',
+      usage: { inputTokens: 11, outputTokens: 22 },
+    });
+    expect(fetchMock.mock.calls[0][0]).toBe('https://api.openai.com/v1/chat/completions');
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(body.response_format).toEqual(expect.objectContaining({
+      type: 'json_schema',
+      json_schema: expect.objectContaining({
+        schema: expect.objectContaining({ type: 'array' }),
+      }),
+    }));
+  });
+
+  it('parses Anthropic JSON arrays for LangGraph file agents', async () => {
+    process.env.LLM_PROVIDER = 'anthropic';
+    process.env.ANTHROPIC_API_KEY = 'test-anthropic-key';
+    process.env.ANTHROPIC_MODEL = 'claude-test-model';
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify([
+              {
+                filePath: 'API.md',
+                content: '# API',
+                language: 'markdown',
+              },
+            ]),
+          },
+        ],
+        usage: {
+          input_tokens: 13,
+          output_tokens: 21,
+        },
+      }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await new GraphLlmProvider().generateJson<Array<{ filePath: string }>>({
+      agentName: 'architecture_agent',
+      systemPrompt: 'Generate docs.',
+      userPrompt: 'Generate one doc.',
+      expectedShape: 'array',
+    });
+
+    expect(result).toEqual({
+      value: [{ filePath: 'API.md', content: '# API', language: 'markdown' }],
+      model: 'claude-test-model',
+      usage: { inputTokens: 13, outputTokens: 21 },
+    });
+    expect(fetchMock.mock.calls[0][0]).toBe('https://api.anthropic.com/v1/messages');
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(body.system).toContain('Generate docs.');
+    expect(body.messages).toEqual(expect.arrayContaining([
+      expect.objectContaining({ role: 'user' }),
+    ]));
+  });
+
   it('repairs malformed OpenRouter JSON before failing LangGraph agents', async () => {
     process.env.LLM_PROVIDER = 'openrouter';
     process.env.OPENROUTER_API_KEY = 'test-openrouter-key';

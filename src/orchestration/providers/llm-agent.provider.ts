@@ -27,29 +27,74 @@ interface OpenRouterChatResponse {
   };
 }
 
+interface AnthropicMessageResponse {
+  content?: Array<{
+    type?: string;
+    text?: string;
+  }>;
+  error?: {
+    message?: string;
+  };
+}
+
+type LlmProviderName = 'openrouter' | 'openai' | 'anthropic';
+
 @Injectable()
 export class LlmAgentProvider implements WorkOrderAgentProvider {
   readonly mode = 'llm' as const;
 
-  providerName(): string {
-    return process.env.LLM_PROVIDER || 'openrouter';
+  providerName(): LlmProviderName {
+    if (process.env.LLM_PROVIDER === 'anthropic') return 'anthropic';
+    return process.env.LLM_PROVIDER === 'openai' ? 'openai' : 'openrouter';
   }
 
   model(): string {
+    if (this.providerName() === 'anthropic') {
+      return process.env.ANTHROPIC_MODEL || 'claude-3-5-haiku-20241022';
+    }
+
+    if (this.providerName() === 'openai') {
+      return process.env.OPENAI_MODEL || 'gpt-4.1-mini';
+    }
+
     return process.env.OPENROUTER_MODEL || 'deepseek/deepseek-v4-flash:free';
   }
 
   fallbackModel(): string | null {
+    if (this.providerName() === 'anthropic') {
+      return process.env.ANTHROPIC_FALLBACK_MODEL?.trim() || null;
+    }
+
+    if (this.providerName() === 'openai') {
+      return process.env.OPENAI_FALLBACK_MODEL?.trim() || null;
+    }
+
     return process.env.OPENROUTER_FALLBACK_MODEL?.trim() || null;
   }
 
   baseUrl(): string {
+    if (this.providerName() === 'anthropic') {
+      return (process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com/v1').replace(/\/$/, '');
+    }
+
+    if (this.providerName() === 'openai') {
+      return (process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1').replace(/\/$/, '');
+    }
+
     return (process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1').replace(/\/$/, '');
   }
 
   missingRequirements(): string[] {
-    if (this.providerName() !== 'openrouter') {
-      return ['LLM_PROVIDER=openrouter'];
+    if (this.providerName() === 'anthropic') {
+      return process.env.ANTHROPIC_API_KEY?.trim()
+        ? []
+        : ['ANTHROPIC_API_KEY'];
+    }
+
+    if (this.providerName() === 'openai') {
+      return process.env.OPENAI_API_KEY?.trim()
+        ? []
+        : ['OPENAI_API_KEY'];
     }
 
     return process.env.OPENROUTER_API_KEY?.trim()
@@ -64,7 +109,7 @@ export class LlmAgentProvider implements WorkOrderAgentProvider {
   unavailableReason(): string | null {
     const missing = this.missingRequirements();
     if (missing.length === 0) return null;
-    return `OpenRouter provider requires ${missing.join(' and ')}.`;
+    return `${this.providerLabel()} provider requires ${missing.join(' and ')}.`;
   }
 
   async generateWorkOrderOutput(
@@ -72,7 +117,7 @@ export class LlmAgentProvider implements WorkOrderAgentProvider {
   ): Promise<GeneratedWorkOrderOutput> {
     const missing = this.missingRequirements();
     if (missing.length > 0) {
-      throw new Error(`OpenRouter provider is unavailable: missing ${missing.join(', ')}`);
+      throw new Error(`${this.providerLabel()} provider is unavailable: missing ${missing.join(', ')}`);
     }
 
     const primaryError = await this.tryGenerateWithModel(this.model(), context)
@@ -96,35 +141,24 @@ export class LlmAgentProvider implements WorkOrderAgentProvider {
     context: WorkOrderAgentContext,
     primaryError?: unknown,
   ): Promise<GeneratedWorkOrderOutput> {
-    const response = await fetch(`${this.baseUrl()}/chat/completions`, {
+    const response = await fetch(this.url(), {
       method: 'POST',
-      headers: {
-        Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
-        'Content-Type': 'application/json',
-        'HTTP-Referer': process.env.OPENROUTER_SITE_URL || 'http://localhost:4000',
-        'X-Title': process.env.OPENROUTER_APP_NAME || 'DevFlow',
-      },
-      body: JSON.stringify({
-        model,
-        messages: this.messagesFor(context),
-        temperature: 0.2,
-        max_tokens: 1200,
-        response_format: { type: 'json_object' },
-      }),
+      headers: this.headers(),
+      body: JSON.stringify(this.requestBody(model, this.messagesFor(context), 0.2, 'work_order_output')),
     });
 
-    const payload = await response.json().catch(() => null) as OpenRouterChatResponse | null;
+    const payload = await response.json().catch(() => null) as OpenRouterChatResponse | AnthropicMessageResponse | null;
     if (!response.ok) {
-      const detail = payload?.error?.message || response.statusText;
+      const detail = payload && 'error' in payload ? payload.error?.message || response.statusText : response.statusText;
       const fallbackNote = primaryError
         ? ` Fallback after primary failure: ${this.errorMessage(primaryError)}.`
         : '';
-      throw new Error(`OpenRouter ${model} request failed (${response.status}): ${detail}.${fallbackNote}`);
+      throw new Error(`${this.providerLabel()} ${model} request failed (${response.status}): ${detail}.${fallbackNote}`);
     }
 
-    const content = payload?.choices?.[0]?.message?.content;
+    const content = this.contentFromPayload(payload);
     if (!content?.trim()) {
-      throw new Error(`OpenRouter ${model} returned an empty response.`);
+      throw new Error(`${this.providerLabel()} ${model} returned an empty response.`);
     }
 
     const output = await this.parseOutputOrRepair(content, model, context);
@@ -133,7 +167,7 @@ export class LlmAgentProvider implements WorkOrderAgentProvider {
       metadata: {
         ...(output.metadata ?? {}),
         providerMode: this.mode,
-        provider: 'openrouter',
+        provider: this.providerName(),
         model,
         contractVersion: ORCHESTRATION_CONTRACT_VERSION,
         agentType: context.workOrder.agentType,
@@ -160,17 +194,10 @@ export class LlmAgentProvider implements WorkOrderAgentProvider {
     originalError: unknown,
   ): Promise<GeneratedWorkOrderOutput> {
     const contract = agentArtifactContractFor(context.workOrder.agentType);
-    const response = await fetch(`${this.baseUrl()}/chat/completions`, {
+    const response = await fetch(this.url(), {
       method: 'POST',
-      headers: {
-        Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
-        'Content-Type': 'application/json',
-        'HTTP-Referer': process.env.OPENROUTER_SITE_URL || 'http://localhost:4000',
-        'X-Title': process.env.OPENROUTER_APP_NAME || 'DevFlow',
-      },
-      body: JSON.stringify({
-        model,
-        messages: [
+      headers: this.headers(),
+      body: JSON.stringify(this.requestBody(model, [
           {
             role: 'system',
             content: [
@@ -198,25 +225,21 @@ export class LlmAgentProvider implements WorkOrderAgentProvider {
               },
             }),
           },
-        ],
-        temperature: 0,
-        max_tokens: 1200,
-        response_format: { type: 'json_object' },
-      }),
+        ], 0, 'work_order_repair')),
     });
 
-    const payload = await response.json().catch(() => null) as OpenRouterChatResponse | null;
+    const payload = await response.json().catch(() => null) as OpenRouterChatResponse | AnthropicMessageResponse | null;
     if (!response.ok) {
-      const detail = payload?.error?.message || response.statusText;
+      const detail = payload && 'error' in payload ? payload.error?.message || response.statusText : response.statusText;
       throw new Error(
-        `OpenRouter ${model} repair request failed (${response.status}): ${detail}. Original output error: ${this.errorMessage(originalError)}`,
+        `${this.providerLabel()} ${model} repair request failed (${response.status}): ${detail}. Original output error: ${this.errorMessage(originalError)}`,
       );
     }
 
-    const repairedContent = payload?.choices?.[0]?.message?.content;
+    const repairedContent = this.contentFromPayload(payload);
     if (!repairedContent?.trim()) {
       throw new Error(
-        `OpenRouter ${model} repair returned an empty response. Original output error: ${this.errorMessage(originalError)}`,
+        `${this.providerLabel()} ${model} repair returned an empty response. Original output error: ${this.errorMessage(originalError)}`,
       );
     }
 
@@ -224,9 +247,110 @@ export class LlmAgentProvider implements WorkOrderAgentProvider {
       return this.parseOutput(repairedContent, model);
     } catch (repairError) {
       throw new Error(
-        `OpenRouter ${model} repair returned invalid artifact JSON: ${this.errorMessage(repairError)}. Original output error: ${this.errorMessage(originalError)}`,
+        `${this.providerLabel()} ${model} repair returned invalid artifact JSON: ${this.errorMessage(repairError)}. Original output error: ${this.errorMessage(originalError)}`,
       );
     }
+  }
+
+  private apiKey(): string {
+    if (this.providerName() === 'anthropic') {
+      return process.env.ANTHROPIC_API_KEY?.trim() ?? '';
+    }
+
+    return this.providerName() === 'openai'
+      ? process.env.OPENAI_API_KEY?.trim() ?? ''
+      : process.env.OPENROUTER_API_KEY?.trim() ?? '';
+  }
+
+  private headers(): Record<string, string> {
+    if (this.providerName() === 'anthropic') {
+      return {
+        'x-api-key': this.apiKey(),
+        'anthropic-version': process.env.ANTHROPIC_VERSION || '2023-06-01',
+        'Content-Type': 'application/json',
+      };
+    }
+
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${this.apiKey()}`,
+      'Content-Type': 'application/json',
+    };
+
+    if (this.providerName() === 'openrouter') {
+      headers['HTTP-Referer'] = process.env.OPENROUTER_SITE_URL || 'http://localhost:4000';
+      headers['X-Title'] = process.env.OPENROUTER_APP_NAME || 'DevFlow';
+    }
+
+    return headers;
+  }
+
+  private url(): string {
+    return this.providerName() === 'anthropic'
+      ? `${this.baseUrl()}/messages`
+      : `${this.baseUrl()}/chat/completions`;
+  }
+
+  private requestBody(
+    model: string,
+    messages: OpenRouterChatMessage[],
+    temperature: number,
+    schemaName: string,
+  ): Record<string, unknown> {
+    if (this.providerName() === 'anthropic') {
+      const system = messages.find((message) => message.role === 'system')?.content ?? '';
+      const user = messages
+        .filter((message) => message.role === 'user')
+        .map((message) => message.content)
+        .join('\n\n');
+
+      return {
+        model,
+        system,
+        messages: [{ role: 'user', content: user }],
+        temperature,
+        max_tokens: 1200,
+      };
+    }
+
+    return {
+      model,
+      messages,
+      temperature,
+      max_tokens: 1200,
+      response_format: this.responseFormat(schemaName),
+    };
+  }
+
+  private responseFormat(name: string): Record<string, unknown> {
+    if (this.providerName() === 'openai') {
+      return {
+        type: 'json_schema',
+        json_schema: {
+          name,
+          strict: false,
+          schema: {
+            type: 'object',
+            additionalProperties: true,
+          },
+        },
+      };
+    }
+
+    return { type: 'json_object' };
+  }
+
+  private providerLabel(): string {
+    if (this.providerName() === 'anthropic') return 'Anthropic';
+    return this.providerName() === 'openai' ? 'OpenAI' : 'OpenRouter';
+  }
+
+  private contentFromPayload(payload: OpenRouterChatResponse | AnthropicMessageResponse | null): string | null {
+    if (!payload) return null;
+    if ('choices' in payload) return payload.choices?.[0]?.message?.content ?? null;
+    if ('content' in payload) {
+      return payload.content?.find((block) => block.type === 'text' && block.text)?.text ?? null;
+    }
+    return null;
   }
 
   private messagesFor(context: WorkOrderAgentContext): OpenRouterChatMessage[] {
