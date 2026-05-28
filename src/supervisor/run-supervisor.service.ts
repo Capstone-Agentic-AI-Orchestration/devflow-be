@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Interval } from '@nestjs/schedule';
+import { ProjectStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { EventLogService } from './event-log.service';
 
@@ -227,7 +228,7 @@ export class RunSupervisorService {
 
 interface StuckProjectRow {
   id: string;
-  status: string;
+  status: ProjectStatus;
   retryCount: bigint | number;
   maxRetries: bigint | number;
   tokensConsumed: bigint | number;
@@ -236,7 +237,7 @@ interface StuckProjectRow {
 
 interface StuckProject {
   id: string;
-  status: string;
+  status: ProjectStatus;
   retryCount: number;
   maxRetries: number;
   tokensConsumed: number;

@@ -116,17 +116,9 @@ export class BackendAgentNode {
       const response = await this.anthropic.messages.create({
         model: 'claude-haiku-4-5',
         max_tokens: 8192,
-        system: [
-          {
-            type: 'text',
-            text: SYSTEM_PROMPT,
-            // Anthropic prompt caching — mandatory per hard constraints
-            cache_control: { type: 'ephemeral' },
-          },
-          ...(memoryContext
-            ? [{ type: 'text' as const, text: memoryContext }]
-            : []),
-        ],
+        system: memoryContext
+          ? `${SYSTEM_PROMPT}\n\nRelevant memory:\n${memoryContext}`
+          : SYSTEM_PROMPT,
         messages: [
           {
             role: 'user',

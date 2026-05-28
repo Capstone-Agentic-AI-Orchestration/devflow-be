@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 export const envSchema = z.object({
   DATABASE_URL: z.string().url('DATABASE_URL must be a valid URL'),
+  SUPABASE_URL: z.string().url('SUPABASE_URL must be a valid URL'),
   ANTHROPIC_API_KEY: z.string().min(1, 'ANTHROPIC_API_KEY is required'),
   OPENAI_API_KEY: z.string().min(1, 'OPENAI_API_KEY is required'),
   GITHUB_APP_ID: z.string().min(1, 'GITHUB_APP_ID is required'),

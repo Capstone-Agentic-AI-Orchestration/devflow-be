@@ -1,7 +1,8 @@
+import 'reflect-metadata';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { Test } from '@nestjs/testing';
 import { OrchestrationService } from '../src/orchestration/orchestration.service';
 import { PrismaService } from '../src/prisma/prisma.service';
+import { MemoryService } from '../src/memory/memory.service';
 import { RequirementsParserNode } from '../src/orchestration/nodes/requirements-parser.node';
 import { ContractNegotiatorNode } from '../src/orchestration/nodes/contract-negotiator.node';
 import { FrontendAgentNode } from '../src/orchestration/nodes/frontend-agent.node';
@@ -11,6 +12,7 @@ import { ArchitectureAgentNode } from '../src/orchestration/nodes/architecture-a
 import { ValidatorNode } from '../src/orchestration/nodes/validator.node';
 import { GithubCommitNode } from '../src/orchestration/nodes/github-commit.node';
 import type { RequirementsDocument, ProjectContract, GeneratedArtifact } from '../src/orchestration/graph/devflow.state';
+import { ArtifactReviewStatus, ProjectTaskStatus, WorkOrderAgentType, WorkOrderPriority, WorkOrderStatus } from '@prisma/client';
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -73,12 +75,37 @@ function makePrismaMock() {
     },
     artifact: {
       createMany: vi.fn().mockResolvedValue({ count: 0 }),
+      create: vi.fn(),
+    },
+    workOrder: {
+      findFirst: vi.fn(),
+      update: vi.fn().mockResolvedValue({}),
+    },
+    runBudget: {
+      create: vi.fn().mockResolvedValue({}),
+    },
+    eventLog: {
+      create: vi.fn().mockResolvedValue({}),
+    },
+    projectTask: {
+      update: vi.fn().mockResolvedValue({}),
+    },
+    projectTaskActivity: {
+      create: vi.fn().mockResolvedValue({}),
     },
   };
 }
 
 function makeNodeMock<T>(returnValue: T) {
   return { execute: vi.fn().mockResolvedValue(returnValue) };
+}
+
+function makeMemoryMock() {
+  return {
+    writeMistake: vi.fn().mockResolvedValue(undefined),
+    writeSkill: vi.fn().mockResolvedValue(undefined),
+    writePattern: vi.fn().mockResolvedValue(undefined),
+  };
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
@@ -94,9 +121,11 @@ describe('OrchestrationService', () => {
   let architectureAgent: { execute: ReturnType<typeof vi.fn> };
   let validator: { execute: ReturnType<typeof vi.fn> };
   let githubCommit: { execute: ReturnType<typeof vi.fn> };
+  let memory: ReturnType<typeof makeMemoryMock>;
 
-  beforeEach(async () => {
+  beforeEach(() => {
     prisma = makePrismaMock();
+    memory = makeMemoryMock();
 
     requirementsParser = makeNodeMock({ requirements: MOCK_REQUIREMENTS });
     contractNegotiator = makeNodeMock({ contract: MOCK_CONTRACT });
@@ -134,22 +163,19 @@ describe('OrchestrationService', () => {
     validator = makeNodeMock({});
     githubCommit = makeNodeMock({ repoUrl: 'https://github.com/test/test-shop' });
 
-    const module = await Test.createTestingModule({
-      providers: [
-        OrchestrationService,
-        { provide: PrismaService, useValue: prisma },
-        { provide: RequirementsParserNode, useValue: requirementsParser },
-        { provide: ContractNegotiatorNode, useValue: contractNegotiator },
-        { provide: FrontendAgentNode, useValue: frontendAgent },
-        { provide: BackendAgentNode, useValue: backendAgent },
-        { provide: DatabaseAgentNode, useValue: databaseAgent },
-        { provide: ArchitectureAgentNode, useValue: architectureAgent },
-        { provide: ValidatorNode, useValue: validator },
-        { provide: GithubCommitNode, useValue: githubCommit },
-      ],
-    }).compile();
-
-    service = module.get(OrchestrationService);
+    service = new OrchestrationService(
+      prisma as unknown as PrismaService,
+      requirementsParser as unknown as RequirementsParserNode,
+      contractNegotiator as unknown as ContractNegotiatorNode,
+      frontendAgent as unknown as FrontendAgentNode,
+      backendAgent as unknown as BackendAgentNode,
+      databaseAgent as unknown as DatabaseAgentNode,
+      architectureAgent as unknown as ArchitectureAgentNode,
+      validator as unknown as ValidatorNode,
+      githubCommit as unknown as GithubCommitNode,
+      memory as unknown as MemoryService,
+      null,
+    );
 
     // Mock checkpointer so onModuleInit doesn't need a real DB
     vi.spyOn(service as unknown as { onModuleInit: () => Promise<void> }, 'onModuleInit').mockResolvedValue(undefined);
@@ -175,6 +201,9 @@ describe('OrchestrationService', () => {
       updateState: vi.fn(),
       invoke: vi.fn(),
     };
+    (service as unknown as { checkpointer: { get: ReturnType<typeof vi.fn> } }).checkpointer = {
+      get: vi.fn().mockResolvedValue(null),
+    };
 
     await service.resumeGate1('test-project-id', false, 'needs more work');
 
@@ -190,6 +219,9 @@ describe('OrchestrationService', () => {
     const updateState = vi.fn().mockResolvedValue({});
     const invoke = vi.fn().mockResolvedValue({});
     (service as unknown as { graph: unknown }).graph = { updateState, invoke };
+    (service as unknown as { checkpointer: { get: ReturnType<typeof vi.fn> } }).checkpointer = {
+      get: vi.fn().mockResolvedValue(null),
+    };
 
     await service.resumeGate1('test-project-id', true);
 
@@ -208,6 +240,9 @@ describe('OrchestrationService', () => {
     const updateState = vi.fn().mockResolvedValue({});
     const invoke = vi.fn().mockResolvedValue({});
     (service as unknown as { graph: unknown }).graph = { updateState, invoke };
+    (service as unknown as { checkpointer: { get: ReturnType<typeof vi.fn> } }).checkpointer = {
+      get: vi.fn().mockResolvedValue(null),
+    };
 
     await service.resumeGate2('test-project-id', true, 'looks good');
 
@@ -241,5 +276,86 @@ describe('OrchestrationService', () => {
     const status = await service.getStatus('test-project-id');
     expect(status.error).toBeNull();
     expect(status.retryCount).toBe(1);
+  });
+
+  it('executeWorkOrder records execution logs, creates an artifact, and links it back to work order and task', async () => {
+    prisma.workOrder.findFirst.mockResolvedValue({
+      id: 'work-order-1',
+      projectId: 'test-project-id',
+      taskId: 'task-1',
+      artifactId: null,
+      title: 'Build frontend shell',
+      instructions: 'Create the first dashboard shell.',
+      agentType: WorkOrderAgentType.FRONTEND,
+      priority: WorkOrderPriority.HIGH,
+      status: WorkOrderStatus.READY,
+      executionAttempt: 0,
+      dispatchedAt: null,
+      task: {
+        id: 'task-1',
+        title: 'Frontend dashboard',
+        description: 'Client dashboard task.',
+        assignedToId: 'dev-1',
+        status: ProjectTaskStatus.TODO,
+      },
+      artifact: null,
+    });
+    prisma.artifact.create.mockResolvedValue({
+      id: 'artifact-generated-1',
+      projectId: 'test-project-id',
+      agentType: 'frontend',
+      filePath: 'work-orders/work-order-1/frontend-output.md',
+      displayName: 'Build frontend shell output',
+      reviewStatus: ArtifactReviewStatus.PENDING,
+    });
+
+    const result = await service.executeWorkOrder('test-project-id', 'work-order-1', 'pm-1');
+
+    expect(result).toEqual({
+      executionRunId: expect.any(String),
+      artifactId: 'artifact-generated-1',
+    });
+    expect(prisma.eventLog.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        projectId: 'test-project-id',
+        nodeName: 'work_order_frontend',
+        eventType: 'STARTED',
+        costMeta: expect.objectContaining({ workOrderId: 'work-order-1' }),
+      }),
+    });
+    expect(prisma.artifact.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        projectId: 'test-project-id',
+        agentType: 'frontend',
+        filePath: 'work-orders/work-order-1/frontend-output.md',
+        clientVisible: false,
+      }),
+    });
+    expect(prisma.workOrder.update).toHaveBeenCalledWith({
+      where: { id: 'work-order-1' },
+      data: expect.objectContaining({
+        status: WorkOrderStatus.COMPLETED,
+        artifactId: 'artifact-generated-1',
+        executionCompletedAt: expect.any(Date),
+      }),
+    });
+    expect(prisma.projectTask.update).toHaveBeenCalledWith({
+      where: { id: 'task-1' },
+      data: {
+        status: ProjectTaskStatus.IN_REVIEW,
+        artifactId: 'artifact-generated-1',
+      },
+    });
+    expect(prisma.eventLog.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        projectId: 'test-project-id',
+        nodeName: 'work_order_frontend',
+        eventType: 'COMPLETED',
+        costMeta: expect.objectContaining({
+          workOrderId: 'work-order-1',
+          artifactId: 'artifact-generated-1',
+        }),
+      }),
+    });
   });
 });

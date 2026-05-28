@@ -56,11 +56,11 @@ export function buildDevFlowGraph(
   // ── Node definitions ────────────────────────────────────────────────────────
 
   graph.addNode(NODE.PARSE_REQUIREMENTS, (state: any) =>
-    requirementsParser.execute(state: any),
+    requirementsParser.execute(state),
   );
 
   graph.addNode(NODE.NEGOTIATE_CONTRACT, (state: any) =>
-    contractNegotiator.execute(state: any),
+    contractNegotiator.execute(state),
   );
 
   graph.addNode(NODE.GATE_1_CHECK, async (state: any) => {
@@ -88,23 +88,23 @@ export function buildDevFlowGraph(
   });
 
   graph.addNode(NODE.FRONTEND_AGENT, (state: any) =>
-    frontendAgent.execute(state: any),
+    frontendAgent.execute(state),
   );
 
   graph.addNode(NODE.BACKEND_AGENT, (state: any) =>
-    backendAgent.execute(state: any),
+    backendAgent.execute(state),
   );
 
   graph.addNode(NODE.DATABASE_AGENT, (state: any) =>
-    databaseAgent.execute(state: any),
+    databaseAgent.execute(state),
   );
 
   graph.addNode(NODE.ARCHITECTURE_AGENT, (state: any) =>
-    architectureAgent.execute(state: any),
+    architectureAgent.execute(state),
   );
 
   graph.addNode(NODE.VALIDATE_OUTPUTS, (state: any) =>
-    validator.execute(state: any),
+    validator.execute(state),
   );
 
   graph.addNode(NODE.GATE_2_CHECK, async (state: any) => {
@@ -124,7 +124,7 @@ export function buildDevFlowGraph(
   });
 
   graph.addNode(NODE.COMMIT_TO_GITHUB, (state: any) =>
-    githubCommit.execute(state: any),
+    githubCommit.execute(state),
   );
 
   graph.addNode(NODE.MARK_DELIVERED, async (state: any) => {

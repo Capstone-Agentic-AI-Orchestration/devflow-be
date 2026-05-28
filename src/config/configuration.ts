@@ -27,6 +27,9 @@ export default () => {
     database: {
       url: env.data.DATABASE_URL,
     },
+    supabase: {
+      url: env.data.SUPABASE_URL,
+    },
     anthropic: {
       apiKey: env.data.ANTHROPIC_API_KEY,
     },

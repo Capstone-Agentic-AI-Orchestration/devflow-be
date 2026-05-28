@@ -22,6 +22,7 @@ import { ValidatorNode } from './nodes/validator.node';
 import { GithubCommitNode } from './nodes/github-commit.node';
 import { MemoryService } from '../memory/memory.service';
 import { DevFlowGateway } from '../gateway/devflow.gateway';
+import { ProjectTaskActivityType, ProjectTaskStatus, WorkOrderAgentType, WorkOrderStatus } from '@prisma/client';
 
 // ─── Thread Config Helper ─────────────────────────────────────────────────────
 
@@ -43,6 +44,11 @@ export interface OrchestrationStatus {
   currentNode: string;
   retryCount: number;
   error: string | null;
+}
+
+export interface WorkOrderExecutionResult {
+  executionRunId: string;
+  artifactId: string;
 }
 
 // ─── Service ──────────────────────────────────────────────────────────────────
@@ -380,6 +386,175 @@ export class OrchestrationService implements OnModuleInit {
     }
   }
 
+  async executeWorkOrder(
+    projectId: string,
+    workOrderId: string,
+    actorId?: string,
+  ): Promise<WorkOrderExecutionResult> {
+    const executionRunId = createId();
+    const startedAt = new Date();
+    const workOrder = await this.prisma.workOrder.findFirst({
+      where: { id: workOrderId, projectId },
+      include: {
+        task: {
+          select: {
+            id: true,
+            title: true,
+            description: true,
+            assignedToId: true,
+            status: true,
+          },
+        },
+        artifact: {
+          select: {
+            id: true,
+            filePath: true,
+            displayName: true,
+            content: true,
+          },
+        },
+      },
+    });
+
+    if (!workOrder) {
+      throw new Error(`Work order ${workOrderId} not found`);
+    }
+
+    const attempt = workOrder.executionAttempt + 1;
+    const nodeName = this.workOrderNodeName(workOrder.agentType);
+
+    await this.prisma.workOrder.update({
+      where: { id: workOrderId },
+      data: {
+        status: WorkOrderStatus.DISPATCHED,
+        dispatchedAt: workOrder.dispatchedAt ?? startedAt,
+        executionRunId,
+        executionAttempt: attempt,
+        executionStartedAt: startedAt,
+        executionCompletedAt: null,
+        executionError: null,
+        lastEventAt: startedAt,
+      },
+    });
+
+    await this.prisma.eventLog.create({
+      data: {
+        projectId,
+        nodeName,
+        eventType: 'STARTED',
+        costMeta: {
+          workOrderId,
+          executionRunId,
+          attempt,
+          agentType: workOrder.agentType,
+        },
+        runTokens: 0,
+        occurredAt: startedAt,
+      },
+    });
+
+    this.gateway?.emitStatusUpdate(projectId, 'GENERATING_CODE', nodeName);
+
+    try {
+      const completedAt = new Date();
+      const artifact = await this.prisma.artifact.create({
+        data: {
+          projectId,
+          agentType: workOrder.agentType.toLowerCase(),
+          filePath: this.workOrderArtifactPath(workOrder.agentType, workOrder.id),
+          displayName: `${workOrder.title} output`,
+          content: this.renderWorkOrderArtifactContent(workOrder, executionRunId),
+          clientVisible: false,
+        },
+      });
+
+      await this.prisma.workOrder.update({
+        where: { id: workOrderId },
+        data: {
+          status: WorkOrderStatus.COMPLETED,
+          artifactId: artifact.id,
+          completedAt,
+          failedAt: null,
+          executionCompletedAt: completedAt,
+          executionError: null,
+          lastEventAt: completedAt,
+        },
+      });
+
+      if (workOrder.taskId) {
+        await this.prisma.projectTask.update({
+          where: { id: workOrder.taskId },
+          data: { status: ProjectTaskStatus.IN_REVIEW, artifactId: artifact.id },
+        });
+
+        await this.prisma.projectTaskActivity.create({
+          data: {
+            projectId,
+            taskId: workOrder.taskId,
+            actorId,
+            type: ProjectTaskActivityType.ARTIFACT_CHANGED,
+            message: 'Work order execution produced an artifact',
+            metadata: {
+              workOrderId,
+              executionRunId,
+              artifactId: artifact.id,
+            },
+          },
+        });
+      }
+
+      await this.prisma.eventLog.create({
+        data: {
+          projectId,
+          nodeName,
+          eventType: 'COMPLETED',
+          costMeta: {
+            workOrderId,
+            executionRunId,
+            attempt,
+            artifactId: artifact.id,
+            agentType: workOrder.agentType,
+          },
+          runTokens: 0,
+          occurredAt: completedAt,
+        },
+      });
+
+      this.gateway?.emitStatusUpdate(projectId, 'AWAITING_GATE_2', nodeName);
+      return { executionRunId, artifactId: artifact.id };
+    } catch (error) {
+      const failedAt = new Date();
+      const message = error instanceof Error ? error.message : String(error);
+      await this.prisma.workOrder.update({
+        where: { id: workOrderId },
+        data: {
+          status: WorkOrderStatus.FAILED,
+          failedAt,
+          executionError: message,
+          lastEventAt: failedAt,
+        },
+      });
+      await this.prisma.eventLog.create({
+        data: {
+          projectId,
+          nodeName,
+          eventType: 'FAILED',
+          costMeta: {
+            workOrderId,
+            executionRunId,
+            attempt,
+            agentType: workOrder.agentType,
+            error: message,
+          },
+          runTokens: 0,
+          occurredAt: failedAt,
+        },
+      });
+      this.gateway?.emitStatusUpdate(projectId, 'FAILED', nodeName, message);
+      throw error;
+    }
+  }
+
   // ── Private helpers ────────────────────────────────────────────────────────
 
   private async getRunId(projectId: string): Promise<string> {
@@ -407,5 +582,59 @@ export class OrchestrationService implements OnModuleInit {
     }
     const next = cp['next'] as string[] | undefined;
     return next?.[0] ?? 'none';
+  }
+
+  private workOrderNodeName(agentType: WorkOrderAgentType): string {
+    return `work_order_${agentType.toLowerCase()}`;
+  }
+
+  private workOrderArtifactPath(agentType: WorkOrderAgentType, workOrderId: string): string {
+    const extension = agentType === WorkOrderAgentType.DATABASE ? 'sql' : 'md';
+    return `work-orders/${workOrderId}/${agentType.toLowerCase()}-output.${extension}`;
+  }
+
+  private renderWorkOrderArtifactContent(
+    workOrder: {
+      id: string;
+      title: string;
+      instructions: string | null;
+      agentType: WorkOrderAgentType;
+      priority: string;
+      task: { title: string; description: string | null } | null;
+      artifact: { filePath: string; displayName: string | null; content: string } | null;
+    },
+    executionRunId: string,
+  ): string {
+    const lines = [
+      `# ${workOrder.title}`,
+      '',
+      `Execution run: ${executionRunId}`,
+      `Work order: ${workOrder.id}`,
+      `Agent: ${workOrder.agentType}`,
+      `Priority: ${workOrder.priority}`,
+      '',
+      '## Instructions',
+      workOrder.instructions || 'No explicit instructions were provided.',
+    ];
+
+    if (workOrder.task) {
+      lines.push('', '## Linked task', workOrder.task.title);
+      if (workOrder.task.description) lines.push('', workOrder.task.description);
+    }
+
+    if (workOrder.artifact) {
+      lines.push(
+        '',
+        '## Source artifact',
+        workOrder.artifact.displayName || workOrder.artifact.filePath,
+        '',
+        '```',
+        workOrder.artifact.content,
+        '```',
+      );
+    }
+
+    lines.push('', '## Execution result', 'Generated by the DevFlow work-order orchestration bridge.');
+    return lines.join('\n');
   }
 }

@@ -107,16 +107,9 @@ export class ArchitectureAgentNode {
       const response = await this.anthropic.messages.create({
         model: ARCHITECTURE_MODEL,
         max_tokens: 6144,
-        system: [
-          {
-            type: 'text',
-            text: SYSTEM_PROMPT,
-            cache_control: { type: 'ephemeral' },
-          },
-          ...(memoryContext
-            ? [{ type: 'text' as const, text: memoryContext }]
-            : []),
-        ],
+        system: memoryContext
+          ? `${SYSTEM_PROMPT}\n\nRelevant memory:\n${memoryContext}`
+          : SYSTEM_PROMPT,
         messages: [
           {
             role: 'user',
