@@ -9,6 +9,7 @@ import {
 import { RunSupervisorService } from '../src/supervisor/run-supervisor.service';
 import { PrismaService } from '../src/prisma/prisma.service';
 import { EventLogService } from '../src/supervisor/event-log.service';
+import { OrchestrationService } from '../src/orchestration/orchestration.service';
 
 function makePrismaMock() {
   return {
@@ -51,17 +52,33 @@ function makeEventLogMock() {
   };
 }
 
+function makeOrchestrationMock() {
+  return {
+    recoverStaleProject: vi.fn().mockResolvedValue({
+      runId: 'recovery-run-1',
+      readyWorkOrders: 1,
+      completedWorkOrders: 1,
+      failedWorkOrders: 0,
+      status: OrchestrationRunStatus.SUCCEEDED,
+      error: null,
+    }),
+  };
+}
+
 describe('RunSupervisorService', () => {
   let prisma: ReturnType<typeof makePrismaMock>;
   let eventLog: ReturnType<typeof makeEventLogMock>;
+  let orchestration: ReturnType<typeof makeOrchestrationMock>;
   let service: RunSupervisorService;
 
   beforeEach(() => {
     prisma = makePrismaMock();
     eventLog = makeEventLogMock();
+    orchestration = makeOrchestrationMock();
     service = new RunSupervisorService(
       prisma as unknown as PrismaService,
       eventLog as unknown as EventLogService,
+      orchestration as unknown as OrchestrationService,
     );
   });
 
@@ -154,6 +171,14 @@ describe('RunSupervisorService', () => {
       where: { id: 'project-1' },
       data: { status: ProjectStatus.GENERATING_CODE },
     });
+    expect(orchestration.recoverStaleProject).toHaveBeenCalledWith(
+      'project-1',
+      {
+        reason: expect.stringContaining('queued retry 2/3'),
+        retryAttempt: 2,
+        maxRetries: 3,
+      },
+    );
   });
 
   it('escalates and fails dispatched work when retry budget is exhausted', async () => {
@@ -204,6 +229,7 @@ describe('RunSupervisorService', () => {
         failedAt: expect.any(Date),
       }),
     });
+    expect(orchestration.recoverStaleProject).not.toHaveBeenCalled();
   });
 
   it('keeps the supervisor tick from throwing when the scan fails', async () => {

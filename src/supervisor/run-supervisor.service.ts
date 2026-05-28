@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { forwardRef, Inject, Injectable, Logger } from '@nestjs/common';
 import { Interval } from '@nestjs/schedule';
 import {
   OrchestrationRunStatus,
@@ -8,6 +8,7 @@ import {
 } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { EventLogService } from './event-log.service';
+import { OrchestrationService } from '../orchestration/orchestration.service';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -44,12 +45,12 @@ const SUPERVISOR_NODE = 'supervisor';
  *   1. Stuck run detected (no EventLog entry in > 10 minutes)
  *   2. Check RunBudget:
  *      a. retryCount >= maxRetries  →  escalateToHuman()  →  status = FAILED
- *      b. Otherwise                 →  increment retryCount, log STUCK, reset
- *         status to previous active state. The OrchestrationService's existing
- *         resume/poll logic re-invokes LangGraph from the last checkpoint.
+ *      b. Otherwise                 →  increment retryCount, log STUCK, requeue
+ *         stale dispatched work orders, then ask OrchestrationService to create
+ *         and execute a durable recovery run.
  *
- * The supervisor DOES NOT call the LangGraph graph directly. It only updates
- * DB state. OrchestrationService handles actual re-invocation.
+ * The supervisor does not execute agent work directly. It only detects stale
+ * state and delegates recovery execution to OrchestrationService.
  */
 @Injectable()
 export class RunSupervisorService {
@@ -58,6 +59,8 @@ export class RunSupervisorService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly eventLog: EventLogService,
+    @Inject(forwardRef(() => OrchestrationService))
+    private readonly orchestration: OrchestrationService,
   ) {}
 
   // ── Polling tick ───────────────────────────────────────────────────────────
@@ -239,7 +242,6 @@ export class RunSupervisorService {
       // Write the STUCK audit event.
       this.eventLog.logStuck(project.id, SUPERVISOR_NODE),
       this.failRunningRuntimeState(project.id, reason, recoveredAt),
-      this.requeueDispatchedWorkOrders(project.id, reason, recoveredAt),
       // Reset project status to its current active state to signal re-invocation.
       // The previous status is preserved — OrchestrationService polls status and
       // resumes the graph from the LangGraph checkpoint when it sees an active state.
@@ -249,8 +251,36 @@ export class RunSupervisorService {
       }),
     ]);
 
+    const requeueResult = await Promise.allSettled([
+      this.requeueDispatchedWorkOrders(project.id, reason, recoveredAt),
+    ]);
+
+    if (requeueResult[0]?.status === 'rejected') {
+      this.logger.error(
+        `[${project.id}] Supervisor could not requeue dispatched work orders: ${requeueResult[0].reason instanceof Error ? requeueResult[0].reason.message : String(requeueResult[0].reason)}`,
+      );
+      return;
+    }
+
+    await this.orchestration
+      .recoverStaleProject(project.id, {
+        reason,
+        retryAttempt: project.retryCount + 1,
+        maxRetries: project.maxRetries,
+      })
+      .then((result) => {
+        this.logger.log(
+          `[${project.id}] Supervisor recovery run ${result.runId} finished with ${result.status}`,
+        );
+      })
+      .catch((err: unknown) => {
+        this.logger.error(
+          `[${project.id}] Supervisor recovery execution failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      });
+
     this.logger.log(
-      `[${project.id}] Stuck run marked for retry. OrchestrationService will resume from checkpoint.`,
+      `[${project.id}] Stuck run marked for retry and recovery execution was requested.`,
     );
   }
 

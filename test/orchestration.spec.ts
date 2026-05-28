@@ -17,7 +17,7 @@ import { LlmAgentProvider } from '../src/orchestration/providers/llm-agent.provi
 import { MockAgentProvider } from '../src/orchestration/providers/mock-agent.provider';
 import { NotificationsService } from '../src/notifications/notifications.service';
 import type { RequirementsDocument, ProjectContract, GeneratedArtifact } from '../src/orchestration/graph/devflow.state';
-import { ArtifactValidationStatus, ArtifactReviewStatus, OrchestrationRunTrigger, ProjectTaskStatus, WorkOrderAgentType, WorkOrderPriority, WorkOrderStatus } from '@prisma/client';
+import { ArtifactValidationStatus, ArtifactReviewStatus, OrchestrationRunStatus, OrchestrationRunTrigger, ProjectStatus, ProjectTaskStatus, WorkOrderAgentType, WorkOrderPriority, WorkOrderStatus } from '@prisma/client';
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -84,6 +84,7 @@ function makePrismaMock() {
     },
     workOrder: {
       findFirst: vi.fn(),
+      findMany: vi.fn().mockResolvedValue([]),
       count: vi.fn().mockResolvedValue(1),
       update: vi.fn().mockResolvedValue({}),
     },
@@ -652,6 +653,194 @@ describe('OrchestrationService', () => {
     expect(prisma.workOrderExecution.create).not.toHaveBeenCalled();
     expect(prisma.workOrder.update).not.toHaveBeenCalled();
     expect(prisma.artifact.create).not.toHaveBeenCalled();
+  });
+
+  it('recoverStaleProject creates a durable supervisor recovery run and executes ready work orders', async () => {
+    prisma.workOrder.findMany.mockResolvedValue([
+      { id: 'work-order-1', instructions: 'Recover this frontend handoff.' },
+    ]);
+    prisma.orchestrationRun.findUnique.mockResolvedValue({ id: 'orchestration-run-1' });
+    prisma.workOrder.findFirst.mockResolvedValue({
+      id: 'work-order-1',
+      projectId: 'test-project-id',
+      taskId: 'task-1',
+      artifactId: null,
+      title: 'Build frontend shell',
+      instructions: 'Recover this frontend handoff.',
+      agentType: WorkOrderAgentType.FRONTEND,
+      priority: WorkOrderPriority.HIGH,
+      status: WorkOrderStatus.READY,
+      executionAttempt: 1,
+      executionRunId: null,
+      executionStartedAt: null,
+      dispatchedAt: null,
+      project: {
+        id: 'test-project-id',
+        companyName: 'TestCo',
+        brief: 'Build a shop',
+        stackKey: 'nextjs-nestjs',
+      },
+      task: {
+        id: 'task-1',
+        title: 'Frontend dashboard',
+        description: 'Client dashboard task.',
+        assignedToId: 'dev-1',
+        status: ProjectTaskStatus.TODO,
+      },
+      artifact: null,
+    });
+    prisma.artifact.create.mockResolvedValue({
+      id: 'artifact-generated-1',
+      projectId: 'test-project-id',
+      agentType: 'frontend',
+      filePath: 'work-orders/work-order-1/frontend-output.tsx',
+      displayName: 'Build frontend shell output',
+      reviewStatus: ArtifactReviewStatus.PENDING,
+    });
+
+    const result = await service.recoverStaleProject('test-project-id', {
+      reason: 'Supervisor detected stale run and queued retry 2/3',
+      retryAttempt: 2,
+      maxRetries: 3,
+    });
+
+    expect(result).toEqual({
+      runId: expect.any(String),
+      readyWorkOrders: 1,
+      completedWorkOrders: 1,
+      failedWorkOrders: 0,
+      status: OrchestrationRunStatus.SUCCEEDED,
+      error: null,
+    });
+    expect(prisma.orchestrationRun.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        projectId: 'test-project-id',
+        runId: result.runId,
+        providerMode: 'mock',
+        trigger: OrchestrationRunTrigger.RERUN_READY_WORK_ORDERS,
+        status: OrchestrationRunStatus.RUNNING,
+        currentNode: 'supervisor_recovery',
+        readyWorkOrders: 1,
+      }),
+    });
+    expect(prisma.project.update).toHaveBeenCalledWith({
+      where: { id: 'test-project-id' },
+      data: { runId: result.runId, status: ProjectStatus.GENERATING_CODE },
+    });
+    expect(prisma.workOrderExecution.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        orchestrationRunId: 'orchestration-run-1',
+        workOrderId: 'work-order-1',
+        attempt: 2,
+        metadata: expect.objectContaining({
+          trigger: OrchestrationRunTrigger.RERUN_READY_WORK_ORDERS,
+          providerMode: 'mock',
+        }),
+      }),
+    });
+    expect(prisma.orchestrationRun.updateMany).toHaveBeenCalledWith({
+      where: { projectId: 'test-project-id', runId: result.runId },
+      data: expect.objectContaining({
+        status: OrchestrationRunStatus.SUCCEEDED,
+        currentNode: 'supervisor_recovery',
+        error: null,
+        completedWorkOrders: 1,
+        failedWorkOrders: 0,
+        completedArtifacts: 1,
+        completedAt: expect.any(Date),
+      }),
+    });
+    expect(notifications.notify).toHaveBeenCalledWith(expect.objectContaining({
+      projectId: 'test-project-id',
+      title: 'Supervisor recovery completed',
+      metadata: expect.objectContaining({
+        runId: result.runId,
+        retryAttempt: 2,
+        maxRetries: 3,
+      }),
+    }));
+  });
+
+  it('recoverStaleProject records a failed recovery run when the requested provider is unavailable', async () => {
+    process.env.AGENT_PROVIDER = 'llm';
+    delete process.env.ANTHROPIC_API_KEY;
+    delete process.env.OPENAI_API_KEY;
+    prisma.workOrder.findMany.mockResolvedValue([
+      { id: 'work-order-1', instructions: 'Recover this frontend handoff.' },
+    ]);
+    prisma.workOrder.findFirst.mockResolvedValue({
+      id: 'work-order-1',
+      projectId: 'test-project-id',
+      taskId: 'task-1',
+      artifactId: null,
+      title: 'Build frontend shell',
+      instructions: 'Recover this frontend handoff.',
+      agentType: WorkOrderAgentType.FRONTEND,
+      priority: WorkOrderPriority.HIGH,
+      status: WorkOrderStatus.READY,
+      executionAttempt: 1,
+      executionRunId: null,
+      executionStartedAt: null,
+      dispatchedAt: null,
+      project: {
+        id: 'test-project-id',
+        companyName: 'TestCo',
+        brief: 'Build a shop',
+        stackKey: 'nextjs-nestjs',
+      },
+      task: {
+        id: 'task-1',
+        title: 'Frontend dashboard',
+        description: 'Client dashboard task.',
+        assignedToId: 'dev-1',
+        status: ProjectTaskStatus.TODO,
+      },
+      artifact: null,
+    });
+
+    const result = await service.recoverStaleProject('test-project-id', {
+      reason: 'Supervisor detected stale run and queued retry 2/3',
+      retryAttempt: 2,
+      maxRetries: 3,
+    });
+
+    expect(result).toEqual({
+      runId: expect.any(String),
+      readyWorkOrders: 1,
+      completedWorkOrders: 0,
+      failedWorkOrders: 1,
+      status: OrchestrationRunStatus.FAILED,
+      error: expect.stringContaining('Agent provider llm is unavailable'),
+    });
+    expect(prisma.orchestrationRun.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        providerMode: 'llm',
+        status: OrchestrationRunStatus.RUNNING,
+        currentNode: 'supervisor_recovery',
+      }),
+    });
+    expect(prisma.workOrderExecution.create).not.toHaveBeenCalled();
+    expect(prisma.artifact.create).not.toHaveBeenCalled();
+    expect(prisma.orchestrationRun.updateMany).toHaveBeenCalledWith({
+      where: { projectId: 'test-project-id', runId: result.runId },
+      data: expect.objectContaining({
+        status: OrchestrationRunStatus.FAILED,
+        currentNode: 'supervisor_recovery',
+        error: expect.stringContaining('Agent provider llm is unavailable'),
+        completedWorkOrders: 0,
+        failedWorkOrders: 1,
+        completedArtifacts: 0,
+      }),
+    });
+    expect(prisma.project.update).toHaveBeenCalledWith({
+      where: { id: 'test-project-id' },
+      data: { status: ProjectStatus.FAILED },
+    });
+    expect(notifications.notify).toHaveBeenCalledWith(expect.objectContaining({
+      projectId: 'test-project-id',
+      title: 'Supervisor recovery failed',
+      body: expect.stringContaining('Agent provider llm is unavailable'),
+    }));
   });
 
   it('executeWorkOrder fails the order when generated output violates the artifact contract', async () => {

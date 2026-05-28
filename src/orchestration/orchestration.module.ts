@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { forwardRef, Module } from '@nestjs/common';
 import { GithubModule } from '../github/github.module';
 import { MemoryModule } from '../memory/memory.module';
 import { SupervisorModule } from '../supervisor/supervisor.module';
@@ -24,7 +24,7 @@ import { MockAgentProvider } from './providers/mock-agent.provider';
     GithubModule,
     MemoryModule,
     // SupervisorModule exports EventLogService, which all agent nodes inject.
-    SupervisorModule,
+    forwardRef(() => SupervisorModule),
     // Phase 2E — import GatewayModule so DevFlowGateway can be injected
     // into OrchestrationService via @Optional().
     GatewayModule,

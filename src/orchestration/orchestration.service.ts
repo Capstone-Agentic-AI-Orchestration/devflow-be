@@ -80,11 +80,27 @@ interface WorkOrderExecutionOptions {
   allowFailedRetry?: boolean;
 }
 
+interface SupervisorRecoveryOptions {
+  reason: string;
+  retryAttempt: number;
+  maxRetries: number;
+}
+
+export interface SupervisorRecoveryResult {
+  runId: string;
+  readyWorkOrders: number;
+  completedWorkOrders: number;
+  failedWorkOrders: number;
+  status: OrchestrationRunStatus;
+  error: string | null;
+}
+
 const MOCK_NODE = {
   LOAD_READY_WORK_ORDERS: 'load_ready_work_orders',
   EXECUTE_READY_WORK_ORDERS: 'execute_ready_work_orders',
   FINALIZE: 'finalize_mock_orchestration',
 } as const;
+const SUPERVISOR_RECOVERY_NODE = 'supervisor_recovery';
 
 const MockWorkOrderState = Annotation.Root({
   projectId: Annotation<string>(),
@@ -891,6 +907,226 @@ export class OrchestrationService implements OnModuleInit {
       this.gateway?.emitStatusUpdate(projectId, 'FAILED', nodeName, message);
       throw error;
     }
+  }
+
+  async recoverStaleProject(
+    projectId: string,
+    options: SupervisorRecoveryOptions,
+  ): Promise<SupervisorRecoveryResult> {
+    const runId = createId();
+    const startedAt = new Date();
+    const trigger = OrchestrationRunTrigger.RERUN_READY_WORK_ORDERS;
+    const readyWorkOrders = await this.prisma.workOrder.findMany({
+      where: {
+        projectId,
+        status: WorkOrderStatus.READY,
+        instructions: { not: null },
+      },
+      select: { id: true, instructions: true },
+      orderBy: [{ priority: 'desc' }, { createdAt: 'asc' }],
+    });
+    const readyWorkOrderIds = readyWorkOrders
+      .filter((workOrder) => workOrder.instructions?.trim())
+      .map((workOrder) => workOrder.id);
+
+    await this.prisma.orchestrationRun.create({
+      data: {
+        projectId,
+        runId,
+        providerMode: this.agentProviderMode(),
+        trigger,
+        status: OrchestrationRunStatus.RUNNING,
+        currentNode: SUPERVISOR_RECOVERY_NODE,
+        actorId: null,
+        readyWorkOrders: readyWorkOrderIds.length,
+      },
+    });
+
+    await Promise.all([
+      this.prisma.project.update({
+        where: { id: projectId },
+        data: { runId, status: ProjectStatus.GENERATING_CODE },
+      }),
+      this.prisma.eventLog.create({
+        data: {
+          projectId,
+          nodeName: SUPERVISOR_RECOVERY_NODE,
+          eventType: 'STARTED',
+          costMeta: {
+            runId,
+            trigger,
+            reason: options.reason,
+            retryAttempt: options.retryAttempt,
+            maxRetries: options.maxRetries,
+            providerMode: this.agentProviderMode(),
+            requestedProviderMode: this.requestedAgentProviderMode(),
+            readyWorkOrderIds,
+          },
+          runTokens: 0,
+          occurredAt: startedAt,
+        },
+      }),
+      this.prisma.projectTimelineEvent.create({
+        data: {
+          projectId,
+          actorId: null,
+          type: ProjectTimelineEventType.PROJECT_UPDATED,
+          visibility: ProjectTimelineVisibility.TEAM,
+          title: 'Supervisor recovery started',
+          body: `${readyWorkOrderIds.length} ready work order${readyWorkOrderIds.length === 1 ? '' : 's'} queued for automatic recovery.`,
+          metadata: {
+            runId,
+            reason: options.reason,
+            retryAttempt: options.retryAttempt,
+            maxRetries: options.maxRetries,
+            readyWorkOrderIds,
+          },
+        },
+      }),
+    ]);
+
+    this.gateway?.emitStatusUpdate(
+      projectId,
+      ProjectStatus.GENERATING_CODE,
+      SUPERVISOR_RECOVERY_NODE,
+    );
+
+    const completedArtifactIds: string[] = [];
+    const failedWorkOrderIds: string[] = [];
+    let error: string | null = null;
+
+    if (readyWorkOrderIds.length === 0) {
+      error = 'Supervisor recovery found no READY work orders with instructions.';
+    }
+
+    for (const workOrderId of readyWorkOrderIds) {
+      try {
+        const result = await this.executeWorkOrder(
+          projectId,
+          workOrderId,
+          undefined,
+          {
+            emitLifecycleEvents: true,
+            parentRunId: runId,
+            trigger,
+          },
+        );
+        completedArtifactIds.push(result.artifactId);
+      } catch (err) {
+        failedWorkOrderIds.push(workOrderId);
+        error = err instanceof Error ? err.message : String(err);
+      }
+    }
+
+    const failed = Boolean(error) || failedWorkOrderIds.length > 0;
+    const completedAt = new Date();
+    const status = failed
+      ? OrchestrationRunStatus.FAILED
+      : OrchestrationRunStatus.SUCCEEDED;
+    const projectStatus = failed
+      ? ProjectStatus.FAILED
+      : ProjectStatus.AWAITING_GATE_2;
+    const body = failed
+      ? error
+      : `${completedArtifactIds.length} recovered artifact${completedArtifactIds.length === 1 ? '' : 's'} ready for PM output review.`;
+
+    await Promise.all([
+      this.prisma.project.update({
+        where: { id: projectId },
+        data: { status: projectStatus },
+      }),
+      this.prisma.eventLog.create({
+        data: {
+          projectId,
+          nodeName: SUPERVISOR_RECOVERY_NODE,
+          eventType: failed ? 'FAILED' : 'COMPLETED',
+          costMeta: {
+            runId,
+            trigger,
+            reason: options.reason,
+            retryAttempt: options.retryAttempt,
+            maxRetries: options.maxRetries,
+            providerMode: this.agentProviderMode(),
+            requestedProviderMode: this.requestedAgentProviderMode(),
+            readyWorkOrderIds,
+            completedArtifactIds,
+            failedWorkOrderIds,
+            error,
+          },
+          runTokens: 0,
+          occurredAt: completedAt,
+        },
+      }),
+      this.prisma.projectTimelineEvent.create({
+        data: {
+          projectId,
+          actorId: null,
+          type: ProjectTimelineEventType.PROJECT_UPDATED,
+          visibility: ProjectTimelineVisibility.TEAM,
+          title: failed
+            ? 'Supervisor recovery failed'
+            : 'Supervisor recovery completed',
+          body,
+          metadata: {
+            runId,
+            reason: options.reason,
+            retryAttempt: options.retryAttempt,
+            maxRetries: options.maxRetries,
+            readyWorkOrderIds,
+            completedArtifactIds,
+            failedWorkOrderIds,
+            error,
+          },
+        },
+      }),
+      this.prisma.orchestrationRun.updateMany({
+        where: { projectId, runId },
+        data: {
+          status,
+          currentNode: SUPERVISOR_RECOVERY_NODE,
+          error,
+          completedWorkOrders: completedArtifactIds.length,
+          failedWorkOrders: failedWorkOrderIds.length,
+          completedArtifacts: completedArtifactIds.length,
+          completedAt,
+        },
+      }),
+    ]);
+
+    await this.notifications.notify({
+      recipientIds: await this.notifications.projectManagers(projectId),
+      actorId: null,
+      projectId,
+      type: NotificationType.WORK_ORDER_STATUS_CHANGED,
+      title: failed
+        ? 'Supervisor recovery failed'
+        : 'Supervisor recovery completed',
+      body,
+      metadata: {
+        runId,
+        reason: options.reason,
+        retryAttempt: options.retryAttempt,
+        maxRetries: options.maxRetries,
+        completedArtifacts: completedArtifactIds.length,
+        failedWorkOrders: failedWorkOrderIds.length,
+      },
+    });
+
+    this.gateway?.emitStatusUpdate(
+      projectId,
+      projectStatus,
+      SUPERVISOR_RECOVERY_NODE,
+      error ?? undefined,
+    );
+
+    return {
+      runId,
+      readyWorkOrders: readyWorkOrderIds.length,
+      completedWorkOrders: completedArtifactIds.length,
+      failedWorkOrders: failedWorkOrderIds.length,
+      status,
+      error,
+    };
   }
 
   // ── Private helpers ────────────────────────────────────────────────────────
