@@ -58,6 +58,10 @@ OPENAI_BASE_URL="https://api.openai.com/v1"
 OPENAI_MODEL="gpt-4.1-mini"
 OPENAI_FALLBACK_MODEL=""
 OPENAI_API_KEY=""
+OPENCODE_BASE_URL="https://opencode.ai/zen/go/v1"
+OPENCODE_MODEL="deepseek-v4-flash"
+OPENCODE_FALLBACK_MODEL="deepseek-v4-pro"
+OPENCODE_API_KEY=""
 ANTHROPIC_BASE_URL="https://api.anthropic.com/v1"
 ANTHROPIC_MODEL="claude-3-5-haiku-20241022"
 ANTHROPIC_FALLBACK_MODEL=""
@@ -80,13 +84,13 @@ LANGCHAIN_PROJECT="devflow"
 
 `SUPABASE_SERVICE_ROLE_KEY` is server-side only. Never expose it to `devlow-frontend`.
 
-`AGENT_PROVIDER=mock` runs the deterministic local orchestration provider and does not require LLM or GitHub credentials. Use `AGENT_PROVIDER=llm` with `LLM_PROVIDER=openrouter` and `OPENROUTER_API_KEY` to run real LangGraph and work-order artifact generation through OpenRouter. If OpenRouter is throttled, `LLM_PROVIDER=openai` with `OPENAI_API_KEY` or `LLM_PROVIDER=anthropic` with `ANTHROPIC_API_KEY` uses an alternate provider instead. The default OpenRouter model is `deepseek/deepseek-v4-flash:free`; the default OpenAI model is `gpt-4.1-mini`; the default Anthropic model is `claude-3-5-haiku-20241022`.
+`AGENT_PROVIDER=mock` runs the deterministic local orchestration provider and does not require LLM or GitHub credentials. Use `AGENT_PROVIDER=llm` with `LLM_PROVIDER=openrouter` and `OPENROUTER_API_KEY` to run real LangGraph and work-order artifact generation through OpenRouter. If OpenRouter is throttled, `LLM_PROVIDER=opencode` with `OPENCODE_API_KEY`, `LLM_PROVIDER=openai` with `OPENAI_API_KEY`, or `LLM_PROVIDER=anthropic` with `ANTHROPIC_API_KEY` uses an alternate provider instead. The default OpenRouter model is `deepseek/deepseek-v4-flash:free`; the default OpenCode model is `deepseek-v4-flash`; the default OpenAI model is `gpt-4.1-mini`; the default Anthropic model is `claude-3-5-haiku-20241022`.
 
 The LangGraph path defines DevFlow's own agents: requirements parser, contract negotiator, frontend, backend, database, architecture, validator, and GitHub commit. LangGraph controls ordering, parallel fan-out, retries, and human approval gates. OpenRouter only supplies the model calls inside those custom agents. After Gate 2 approval, the GitHub commit node creates a private repository through the configured GitHub App, commits generated artifacts, injects CI, and stores `repoUrl` on the project.
 
 GitHub delivery requires `GITHUB_APP_ID`, a valid base64-encoded PEM `GITHUB_PRIVATE_KEY`, `GITHUB_INSTALLATION_ID`, and `GITHUB_ORG`. The orchestration provider endpoint includes `githubDelivery` readiness details so the app can show missing setup before Gate 2 delivery fails.
 
-`npm run smoke:langgraph-github` is safe by default and skips before creating a repository. Set `LANGGRAPH_GITHUB_SMOKE_CREATE=true` only when you intentionally want a real end-to-end smoke repository created through the full LangGraph Gate 1 -> Gate 2 -> GitHub delivery flow. The live smoke preflights OpenRouter, OpenAI, and Anthropic and uses the first configured provider that accepts a real request; set `LANGGRAPH_GITHUB_SMOKE_PROVIDER_AUTO=false` to test only the configured `LLM_PROVIDER`.
+`npm run smoke:langgraph-github` is safe by default and skips before creating a repository. Set `LANGGRAPH_GITHUB_SMOKE_CREATE=true` only when you intentionally want a real end-to-end smoke repository created through the full LangGraph Gate 1 -> Gate 2 -> GitHub delivery flow. The live smoke preflights OpenRouter, OpenCode, OpenAI, and Anthropic and uses the first configured provider that accepts a real request; set `LANGGRAPH_GITHUB_SMOKE_PROVIDER_AUTO=false` to test only the configured `LLM_PROVIDER`.
 
 ## Scripts
 

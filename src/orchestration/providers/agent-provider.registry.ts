@@ -31,7 +31,7 @@ export class AgentProviderRegistry {
       },
       {
         mode: this.llmAgentProvider.mode,
-        displayName: `${this.llmAgentProvider.providerName() === 'openai' ? 'OpenAI' : 'OpenRouter'} LLM Provider`,
+        displayName: `${this.providerDisplayName(this.llmAgentProvider.providerName())} LLM Provider`,
         active: requestedMode === this.llmAgentProvider.mode,
         available: llmAvailable,
         implemented: true,
@@ -77,5 +77,16 @@ export class AgentProviderRegistry {
 
   activeMode(): AgentProviderMode {
     return this.getStatus().activeMode;
+  }
+
+  private providerDisplayName(provider: string): string {
+    const names: Record<string, string> = {
+      openrouter: 'OpenRouter',
+      openai: 'OpenAI',
+      anthropic: 'Anthropic',
+      opencode: 'OpenCode',
+    };
+
+    return names[provider] ?? provider;
   }
 }

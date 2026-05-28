@@ -36,6 +36,12 @@ export default () => {
         model: env.data.OPENROUTER_MODEL,
         fallbackModel: env.data.OPENROUTER_FALLBACK_MODEL || undefined,
       },
+      opencode: {
+        apiKey: env.data.OPENCODE_API_KEY,
+        baseUrl: env.data.OPENCODE_BASE_URL,
+        model: env.data.OPENCODE_MODEL,
+        fallbackModel: env.data.OPENCODE_FALLBACK_MODEL || undefined,
+      },
     },
     supabase: {
       url: env.data.SUPABASE_URL,

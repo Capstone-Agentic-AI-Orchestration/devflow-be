@@ -109,6 +109,57 @@ describe('GraphLlmProvider', () => {
     }));
   });
 
+  it('parses OpenCode JSON arrays through the OpenAI-compatible path', async () => {
+    process.env.LLM_PROVIDER = 'opencode';
+    process.env.OPENCODE_API_KEY = 'test-opencode-key';
+    process.env.OPENCODE_MODEL = 'deepseek-v4-flash';
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({
+        choices: [
+          {
+            message: {
+              content: JSON.stringify([
+                {
+                  filePath: 'src/app/page.tsx',
+                  content: 'export default function Page() { return <div>OpenCode</div>; }',
+                  language: 'tsx',
+                },
+              ]),
+            },
+          },
+        ],
+        usage: {
+          prompt_tokens: 17,
+          completion_tokens: 29,
+        },
+      }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await new GraphLlmProvider().generateJson<Array<{ filePath: string }>>({
+      agentName: 'frontend_agent',
+      systemPrompt: 'Generate files.',
+      userPrompt: 'Generate one file.',
+      expectedShape: 'array',
+    });
+
+    expect(result).toEqual({
+      value: [{ filePath: 'src/app/page.tsx', content: 'export default function Page() { return <div>OpenCode</div>; }', language: 'tsx' }],
+      model: 'deepseek-v4-flash',
+      usage: { inputTokens: 17, outputTokens: 29 },
+    });
+    expect(fetchMock.mock.calls[0][0]).toBe('https://opencode.ai/zen/go/v1/chat/completions');
+    expect(fetchMock.mock.calls[0][1].headers.Authorization).toBe('Bearer test-opencode-key');
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(body.response_format).toEqual(expect.objectContaining({
+      type: 'json_schema',
+      json_schema: expect.objectContaining({
+        schema: expect.objectContaining({ type: 'array' }),
+      }),
+    }));
+  });
+
   it('parses Anthropic JSON arrays for LangGraph file agents', async () => {
     process.env.LLM_PROVIDER = 'anthropic';
     process.env.ANTHROPIC_API_KEY = 'test-anthropic-key';

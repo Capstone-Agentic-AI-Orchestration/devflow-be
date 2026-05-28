@@ -119,6 +119,50 @@ async function assertOpenAiPreflight() {
   }
 }
 
+async function assertOpenCodePreflight() {
+  if (process.env.LLM_PROVIDER !== 'opencode') return;
+
+  const apiKey = process.env.OPENCODE_API_KEY?.trim();
+  if (!apiKey) {
+    throw new Error('OPENCODE_API_KEY is not configured.');
+  }
+
+  const baseUrl = process.env.OPENCODE_BASE_URL || 'https://opencode.ai/zen/go/v1';
+  const model = process.env.OPENCODE_MODEL || 'deepseek-v4-flash';
+  const response = await fetch(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model,
+      messages: [
+        {
+          role: 'user',
+          content: 'Return {"ok":true} as JSON.',
+        },
+      ],
+      max_tokens: 16,
+      response_format: {
+        type: 'json_schema',
+        json_schema: {
+          name: 'langgraph_github_smoke_preflight',
+          strict: false,
+          schema: { type: 'object', additionalProperties: true },
+        },
+      },
+    }),
+  });
+
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(
+      `OpenCode preflight failed (${response.status}): ${parseOpenRouterError(body).slice(0, 500)}`,
+    );
+  }
+}
+
 async function assertAnthropicPreflight() {
   if (process.env.LLM_PROVIDER !== 'anthropic') return;
 
@@ -160,6 +204,7 @@ async function assertAnthropicPreflight() {
 async function assertProviderPreflight() {
   await assertOpenRouterPreflight();
   await assertOpenAiPreflight();
+  await assertOpenCodePreflight();
   await assertAnthropicPreflight();
 }
 
@@ -167,7 +212,7 @@ async function selectLlmProvider() {
   const requestedProvider = process.env.LLM_PROVIDER || 'openrouter';
   const autoSelect = process.env.LANGGRAPH_GITHUB_SMOKE_PROVIDER_AUTO !== 'false';
   const candidates = autoSelect
-    ? [...new Set([requestedProvider, 'openrouter', 'openai', 'anthropic'])]
+    ? [...new Set([requestedProvider, 'openrouter', 'opencode', 'openai', 'anthropic'])]
     : [requestedProvider];
   const failures = [];
 

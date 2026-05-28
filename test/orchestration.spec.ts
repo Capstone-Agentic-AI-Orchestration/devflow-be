@@ -483,6 +483,34 @@ describe('OrchestrationService', () => {
     }));
   });
 
+  it('getProviderStatus reports OpenCode as available when a key is configured', () => {
+    process.env.AGENT_PROVIDER = 'llm';
+    process.env.LLM_PROVIDER = 'opencode';
+    process.env.OPENCODE_API_KEY = 'test-opencode-key';
+    process.env.OPENCODE_FALLBACK_MODEL = 'deepseek-v4-pro';
+
+    const status = service.getProviderStatus();
+
+    expect(status).toEqual(expect.objectContaining({
+      requestedMode: 'llm',
+      activeMode: 'llm',
+      available: true,
+      fallbackMode: null,
+      missingRequirements: [],
+      reason: null,
+      provider: 'opencode',
+      model: 'deepseek-v4-flash',
+      fallbackModel: 'deepseek-v4-pro',
+    }));
+    expect(status.providers).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        mode: 'llm',
+        displayName: 'OpenCode LLM Provider',
+        available: true,
+      }),
+    ]));
+  });
+
   it('startRun rejects LLM orchestration when GitHub delivery is not configured', async () => {
     process.env.AGENT_PROVIDER = 'llm';
     process.env.OPENROUTER_API_KEY = 'test-openrouter-key';

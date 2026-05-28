@@ -32,7 +32,7 @@ interface AnthropicMessageResponse {
   };
 }
 
-type GraphLlmProviderName = 'openrouter' | 'openai' | 'anthropic';
+type GraphLlmProviderName = 'openrouter' | 'openai' | 'anthropic' | 'opencode';
 
 export interface GraphLlmJsonOptions {
   agentName: string;
@@ -55,6 +55,7 @@ export interface GraphLlmJsonResult<T> {
 export class GraphLlmProvider {
   providerName(): GraphLlmProviderName {
     if (process.env.LLM_PROVIDER === 'anthropic') return 'anthropic';
+    if (process.env.LLM_PROVIDER === 'opencode') return 'opencode';
     return process.env.LLM_PROVIDER === 'openai' ? 'openai' : 'openrouter';
   }
 
@@ -65,6 +66,10 @@ export class GraphLlmProvider {
 
     if (this.providerName() === 'openai') {
       return process.env.OPENAI_MODEL || 'gpt-4.1-mini';
+    }
+
+    if (this.providerName() === 'opencode') {
+      return process.env.OPENCODE_MODEL || 'deepseek-v4-flash';
     }
 
     return process.env.OPENROUTER_MODEL || 'deepseek/deepseek-v4-flash:free';
@@ -79,6 +84,10 @@ export class GraphLlmProvider {
       return process.env.OPENAI_FALLBACK_MODEL?.trim() || null;
     }
 
+    if (this.providerName() === 'opencode') {
+      return process.env.OPENCODE_FALLBACK_MODEL?.trim() || null;
+    }
+
     return process.env.OPENROUTER_FALLBACK_MODEL?.trim() || null;
   }
 
@@ -89,6 +98,10 @@ export class GraphLlmProvider {
 
     if (this.providerName() === 'openai') {
       return (process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1').replace(/\/$/, '');
+    }
+
+    if (this.providerName() === 'opencode') {
+      return (process.env.OPENCODE_BASE_URL || 'https://opencode.ai/zen/go/v1').replace(/\/$/, '');
     }
 
     return (process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1').replace(/\/$/, '');
@@ -236,6 +249,10 @@ export class GraphLlmProvider {
       return process.env.ANTHROPIC_API_KEY?.trim() ?? '';
     }
 
+    if (this.providerName() === 'opencode') {
+      return process.env.OPENCODE_API_KEY?.trim() ?? '';
+    }
+
     return this.providerName() === 'openai'
       ? process.env.OPENAI_API_KEY?.trim() ?? ''
       : process.env.OPENROUTER_API_KEY?.trim() ?? '';
@@ -243,6 +260,7 @@ export class GraphLlmProvider {
 
   private apiKeyName(): string {
     if (this.providerName() === 'anthropic') return 'ANTHROPIC_API_KEY';
+    if (this.providerName() === 'opencode') return 'OPENCODE_API_KEY';
     return this.providerName() === 'openai' ? 'OPENAI_API_KEY' : 'OPENROUTER_API_KEY';
   }
 
@@ -306,7 +324,7 @@ export class GraphLlmProvider {
   }
 
   private responseFormat(options: GraphLlmJsonOptions): Record<string, unknown> {
-    if (this.providerName() === 'openai') {
+    if (this.providerName() === 'openai' || this.providerName() === 'opencode') {
       return {
         response_format: {
           type: 'json_schema',
@@ -328,6 +346,7 @@ export class GraphLlmProvider {
 
   private providerLabel(): string {
     if (this.providerName() === 'anthropic') return 'Anthropic';
+    if (this.providerName() === 'opencode') return 'OpenCode';
     return this.providerName() === 'openai' ? 'OpenAI' : 'OpenRouter';
   }
 
