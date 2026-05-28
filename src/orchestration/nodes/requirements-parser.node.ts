@@ -6,7 +6,6 @@ import { MemoryService } from '../../memory/memory.service';
 import {
   DevFlowStateType,
   RequirementsDocument,
-  TechStack,
 } from '../graph/devflow.state';
 
 // ─── Zod Schema for Structured Output ────────────────────────────────────────
@@ -97,7 +96,7 @@ Analyze this brief and produce a structured requirements document. Base the tech
       const requirements: RequirementsDocument = {
         projectType: result.projectType,
         features: result.features,
-        techStack: result.techStack as TechStack,
+        techStack: result.techStack,
         complexity: result.complexity,
         estimatedFiles: result.estimatedFiles,
       };

@@ -43,7 +43,7 @@ export class HttpExceptionFilter implements ExceptionFilter {
       path: request.url,
     };
 
-    if (!isProduction && status >= HttpStatus.INTERNAL_SERVER_ERROR) {
+    if (!isProduction && status >= 500) {
       this.logger.error(
         `${request.method} ${request.url} — ${status}`,
         exception.stack,

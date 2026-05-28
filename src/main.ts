@@ -2,6 +2,7 @@ import { NestFactory } from '@nestjs/core';
 import { Logger } from '@nestjs/common';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { IoAdapter } from '@nestjs/platform-socket.io';
+import type { Request, Response } from 'express';
 import { AppModule } from './app.module';
 
 async function bootstrap(): Promise<void> {
@@ -23,8 +24,7 @@ async function bootstrap(): Promise<void> {
   // from the environment at import time when both vars are set.
 
   // Simple health probe — used by Dockerfile HEALTHCHECK and load balancers
-  const httpAdapter = app.getHttpAdapter();
-  httpAdapter.get('/health', (_req: any, res: any) => {
+  app.use('/health', (_req: Request, res: Response) => {
     res.json({ status: 'ok' });
   });
 

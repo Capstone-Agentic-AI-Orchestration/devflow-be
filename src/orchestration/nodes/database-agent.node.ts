@@ -65,11 +65,13 @@ export class DatabaseAgentNode {
         this.logger.log(
           `[${state.projectId}] Skip-generation: reusing database memory artifact (similarity=${skipCandidate.similarity?.toFixed(3)})`,
         );
+        const rememberedFilePath = skipCandidate.metadata['filePath'];
         const artifact: GeneratedArtifact = {
           agentType: 'database',
           filePath:
-            (skipCandidate.metadata as Record<string, unknown>)['filePath'] as string ??
-            'prisma/schema.prisma',
+            typeof rememberedFilePath === 'string'
+              ? rememberedFilePath
+              : 'prisma/schema.prisma',
           content: skipCandidate.content,
           language: 'prisma',
         };

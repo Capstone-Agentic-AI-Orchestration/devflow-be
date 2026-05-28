@@ -1,4 +1,4 @@
-import { Transform } from 'class-transformer';
+import { Transform, type TransformFnParams } from 'class-transformer';
 import { IsArray, IsEnum, IsInt, IsOptional, IsString, Max, Min } from 'class-validator';
 import { UserRole } from '@prisma/client';
 
@@ -8,17 +8,23 @@ export class SearchProfilesDto {
   q?: string;
 
   @IsOptional()
-  @Transform(({ value }) => {
-    if (Array.isArray(value)) return value;
-    if (typeof value === 'string') return value.split(',').map((role) => role.trim()).filter(Boolean);
-    return value;
+  @Transform(({ value }: TransformFnParams): unknown => {
+    const rawValue = value as unknown;
+    if (Array.isArray(rawValue)) return rawValue;
+    if (typeof rawValue === 'string') {
+      return rawValue
+        .split(',')
+        .map((role) => role.trim())
+        .filter(Boolean);
+    }
+    return rawValue;
   })
   @IsArray()
   @IsEnum(UserRole, { each: true })
   roles?: UserRole[];
 
   @IsOptional()
-  @Transform(({ value }) => Number(value))
+  @Transform(({ value }: TransformFnParams): number => Number(value))
   @IsInt()
   @Min(1)
   @Max(50)

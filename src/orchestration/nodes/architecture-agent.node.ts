@@ -74,11 +74,13 @@ export class ArchitectureAgentNode {
         this.logger.log(
           `[${state.projectId}] Skip-generation: reusing architecture memory artifact (similarity=${skipCandidate.similarity?.toFixed(3)})`,
         );
+        const rememberedFilePath = skipCandidate.metadata['filePath'];
         const artifact: GeneratedArtifact = {
           agentType: 'architecture',
           filePath:
-            (skipCandidate.metadata as Record<string, unknown>)['filePath'] as string ??
-            'ARCHITECTURE.md',
+            typeof rememberedFilePath === 'string'
+              ? rememberedFilePath
+              : 'ARCHITECTURE.md',
           content: skipCandidate.content,
           language: 'markdown',
         };

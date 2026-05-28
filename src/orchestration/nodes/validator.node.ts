@@ -33,7 +33,7 @@ export class ValidatorNode {
     }
 
     try {
-      const result = await this.validate(state);
+      const result = this.validate(state);
 
       if (result.valid) {
         this.logger.log(`[${state.projectId}] Validation passed`);
@@ -107,7 +107,7 @@ export class ValidatorNode {
     }
   }
 
-  private async validate(state: DevFlowStateType): Promise<ValidationResult> {
+  private validate(state: DevFlowStateType): ValidationResult {
     if (process.env.MOCK_MODE === 'true') {
       return {
         valid: true,

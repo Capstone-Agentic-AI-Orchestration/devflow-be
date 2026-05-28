@@ -66,11 +66,13 @@ export class FrontendAgentNode {
         this.logger.log(
           `[${state.projectId}] Skip-generation: reusing frontend memory artifact (similarity=${skipCandidate.similarity?.toFixed(3)})`,
         );
+        const rememberedFilePath = skipCandidate.metadata['filePath'];
         const artifact: GeneratedArtifact = {
           agentType: 'frontend',
           filePath:
-            (skipCandidate.metadata as Record<string, unknown>)['filePath'] as string ??
-            'src/app/page.tsx',
+            typeof rememberedFilePath === 'string'
+              ? rememberedFilePath
+              : 'src/app/page.tsx',
           content: skipCandidate.content,
           language: 'typescript',
         };

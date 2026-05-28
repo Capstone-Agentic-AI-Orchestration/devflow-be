@@ -70,11 +70,13 @@ export class BackendAgentNode {
         this.logger.log(
           `[${state.projectId}] Skip-generation: reusing backend memory artifact (similarity=${skipCandidate.similarity?.toFixed(3)})`,
         );
+        const rememberedFilePath = skipCandidate.metadata['filePath'];
         const artifact: GeneratedArtifact = {
           agentType: 'backend',
           filePath:
-            (skipCandidate.metadata as Record<string, unknown>)['filePath'] as string ??
-            'src/generated/artifact.ts',
+            typeof rememberedFilePath === 'string'
+              ? rememberedFilePath
+              : 'src/generated/artifact.ts',
           content: skipCandidate.content,
           language: 'typescript',
         };
