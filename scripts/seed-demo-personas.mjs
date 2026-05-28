@@ -285,7 +285,7 @@ async function seed() {
       brief:
         'A seeded demo project for testing PM, Developer, and Client views with artifacts, tasks, notifications, timeline events, and work orders.',
       stackKey: 'nextjs-nestjs-supabase',
-      status: ProjectStatus.GENERATING_CODE,
+      status: ProjectStatus.AWAITING_GATE_2,
       runId: 'demo-run-personas',
       repoUrl: 'https://github.com/example/devflow-demo',
       createdById: pm.id,
