@@ -4,6 +4,7 @@ import { ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { generateKeyPairSync } from 'node:crypto';
 import { GithubService } from '../src/github/github.service';
+import { normalizeGithubPrivateKey } from '../src/config/configuration';
 
 function makeConfig(values: Record<string, unknown>) {
   return {
@@ -17,6 +18,18 @@ function validPrivateKey(): string {
 }
 
 describe('GithubService', () => {
+  it('normalizes base64, raw PEM, and escaped PEM GitHub private keys', () => {
+    const privateKey = validPrivateKey();
+    const escapedPrivateKey = privateKey.replace(/\n/g, '\\n');
+    const base64PrivateKey = Buffer.from(privateKey, 'utf-8').toString('base64');
+    const base64EscapedPrivateKey = Buffer.from(escapedPrivateKey, 'utf-8').toString('base64');
+
+    expect(normalizeGithubPrivateKey(privateKey)).toBe(privateKey.trim());
+    expect(normalizeGithubPrivateKey(escapedPrivateKey)).toBe(privateKey.trim());
+    expect(normalizeGithubPrivateKey(base64PrivateKey)).toBe(privateKey.trim());
+    expect(normalizeGithubPrivateKey(base64EscapedPrivateKey)).toBe(privateKey.trim());
+  });
+
   it('reports missing GitHub delivery requirements', () => {
     const service = new GithubService(makeConfig({}));
     service.onModuleInit();

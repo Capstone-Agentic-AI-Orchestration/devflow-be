@@ -2,6 +2,23 @@ import { envSchema, EnvSchema } from './env.schema';
 
 let _config: EnvSchema | null = null;
 
+export function normalizeGithubPrivateKey(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed) return undefined;
+
+  const rawPem = trimmed.replace(/\\n/g, '\n').trim();
+  if (rawPem.includes('-----BEGIN')) return rawPem;
+
+  const decodedPem = Buffer.from(trimmed, 'base64')
+    .toString('utf-8')
+    .trim()
+    .replace(/\\n/g, '\n')
+    .trim();
+  if (decodedPem.includes('-----BEGIN')) return decodedPem;
+
+  return rawPem;
+}
+
 export function getConfig(): EnvSchema {
   if (!_config) {
     const result = envSchema.safeParse(process.env);
@@ -54,9 +71,7 @@ export default () => {
     },
     github: {
       appId: env.data.GITHUB_APP_ID || undefined,
-      privateKey: env.data.GITHUB_PRIVATE_KEY
-        ? Buffer.from(env.data.GITHUB_PRIVATE_KEY, 'base64').toString('utf-8')
-        : undefined,
+      privateKey: normalizeGithubPrivateKey(env.data.GITHUB_PRIVATE_KEY),
       installationId: env.data.GITHUB_INSTALLATION_ID
         ? parseInt(env.data.GITHUB_INSTALLATION_ID, 10)
         : undefined,
