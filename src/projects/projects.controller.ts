@@ -173,6 +173,12 @@ export class ProjectsController {
     return this.projectsService.findDeliveryReview(id, user);
   }
 
+  @Get(':id/delivery-readiness')
+  @Roles(UserRole.CLIENT, UserRole.PM, UserRole.DEV, UserRole.ADMIN)
+  findDeliveryReadiness(@Param('id') id: string, @CurrentUser() user: AuthUser) {
+    return this.projectsService.findDeliveryReadiness(id, user);
+  }
+
   @Post(':id/delivery-review/accept')
   @Roles(UserRole.CLIENT)
   @HttpCode(HttpStatus.CREATED)

@@ -179,6 +179,13 @@ async function smoke() {
   assertCheck(deliveryReview?.status === 'REVISION_REQUESTED', `Delivery review endpoint should return REVISION_REQUESTED, got ${deliveryReview?.status}.`);
   assertCheck(pmProjectDetail.lifecycle?.stage === 'REVISION', `PM project detail should derive REVISION lifecycle, got ${pmProjectDetail.lifecycle?.stage}.`);
   assertCheck(kickoff.status === 'READY', `Expected kickoff status READY, got ${kickoff.status}.`);
+  const initialClientReadiness = await apiGet(`/projects/${projectId}/delivery-readiness`, clientToken);
+  const initialPmReadiness = await apiGet(`/projects/${projectId}/delivery-readiness`, pmToken);
+  assertCheck(initialClientReadiness.projectId === projectId, 'CLIENT delivery readiness should be scoped to the demo project.');
+  assertCheck(initialPmReadiness.projectId === projectId, 'PM delivery readiness should be scoped to the demo project.');
+  assertCheck(initialClientReadiness.ready === false, 'Initial delivery readiness should block early final acceptance.');
+  assertCheck(initialClientReadiness.blockers.length > 0, 'Initial delivery readiness should expose concrete blockers.');
+  assertCheck(initialClientReadiness.blockers.some((blocker) => blocker.code === 'DELIVERY_REVISION_OPEN'), 'Initial readiness should include the open delivery revision blocker.');
   await apiPost('/client-invites/accept', clientToken, {}, 201);
   await apiPost(`/projects/${projectId}/delivery-review/accept`, clientToken, {
     note: 'Smoke test final acceptance should be blocked while reviews are open.',
@@ -343,6 +350,7 @@ async function smoke() {
   await apiPatch(`/projects/${projectId}/delivery-review/resolve`, clientToken, {
     resolutionNote: 'Clients should not resolve delivery revisions.',
   }, 403);
+  await apiGet(`/projects/${projectId}/delivery-readiness`, null, 401);
   await apiPost(`/projects/${projectId}/members`, clientToken, {
     userId: devMe.id,
     role: 'DEV',

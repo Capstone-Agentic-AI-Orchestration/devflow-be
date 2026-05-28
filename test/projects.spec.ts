@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { BadRequestException, NotFoundException } from '@nestjs/common';
-import { ArtifactOutputReviewStatus, ArtifactReviewStatus, CollaborationDocumentStatus, NotificationType, OrchestrationRunTrigger, ProjectDeliveryReviewStatus, ProjectKickoffStatus, ProjectStatus, ProjectTimelineEventType, ProjectTimelineVisibility, ProjectTaskActivityType, ProjectTaskStatus, UserRole, WorkOrderAgentType, WorkOrderPriority, WorkOrderStatus } from '@prisma/client';
+import { ArtifactOutputReviewStatus, ArtifactReviewStatus, ArtifactValidationStatus, CollaborationDocumentStatus, NotificationType, OrchestrationRunTrigger, ProjectDeliveryReviewStatus, ProjectKickoffStatus, ProjectStatus, ProjectTimelineEventType, ProjectTimelineVisibility, ProjectTaskActivityType, ProjectTaskStatus, UserRole, WorkOrderAgentType, WorkOrderPriority, WorkOrderStatus } from '@prisma/client';
 import { ProjectsService } from '../src/projects/projects.service';
 import { PrismaService } from '../src/prisma/prisma.service';
 import { OrchestrationService } from '../src/orchestration/orchestration.service';
@@ -1037,11 +1037,19 @@ describe('ProjectsService', () => {
   it('acceptDelivery rejects final acceptance when shared artifact reviews are open', async () => {
     prisma.project.findFirst.mockResolvedValue({ id: 'project-1' });
     prisma.clientInvite.findFirst.mockResolvedValue({ id: 'invite-1' });
-    prisma.artifact.count.mockResolvedValue(1);
+    prisma.artifact.findMany.mockResolvedValue([
+      {
+        id: 'artifact-1',
+        agentType: 'frontend',
+        reviewStatus: ArtifactReviewStatus.PENDING,
+        revisionHandledAt: null,
+        validationStatus: ArtifactValidationStatus.PASSED,
+      },
+    ]);
 
     await expect(
       service.acceptDelivery('project-1', clientUser, {}),
-    ).rejects.toBeInstanceOf(BadRequestException);
+    ).rejects.toThrow('All published artifacts must be approved by the client before accepting delivery');
 
     expect(prisma.projectDeliveryReview.upsert).not.toHaveBeenCalled();
   });
@@ -1049,12 +1057,20 @@ describe('ProjectsService', () => {
   it('acceptDelivery rejects final acceptance when client-visible documents are not approved', async () => {
     prisma.project.findFirst.mockResolvedValue({ id: 'project-1' });
     prisma.clientInvite.findFirst.mockResolvedValue({ id: 'invite-1' });
-    prisma.artifact.count.mockResolvedValue(0);
+    prisma.artifact.findMany.mockResolvedValue([
+      {
+        id: 'artifact-1',
+        agentType: 'frontend',
+        reviewStatus: ArtifactReviewStatus.APPROVED,
+        revisionHandledAt: null,
+        validationStatus: ArtifactValidationStatus.PASSED,
+      },
+    ]);
     prisma.collaborationDocument.count.mockResolvedValue(1);
 
     await expect(
       service.acceptDelivery('project-1', clientUser, {}),
-    ).rejects.toBeInstanceOf(BadRequestException);
+    ).rejects.toThrow('Resolve all client-visible document reviews before accepting delivery');
 
     expect(prisma.collaborationDocument.count).toHaveBeenCalledWith({
       where: {
@@ -1079,15 +1095,25 @@ describe('ProjectsService', () => {
       service.acceptDelivery('project-1', clientUser, {}),
     ).rejects.toThrow('Client invite must be accepted before final delivery can be accepted');
 
-    expect(prisma.artifact.count).not.toHaveBeenCalled();
     expect(prisma.projectDeliveryReview.upsert).not.toHaveBeenCalled();
   });
 
   it('acceptDelivery marks cleared delivery accepted and project delivered', async () => {
     prisma.project.findFirst.mockResolvedValue({ id: 'project-1' });
     prisma.clientInvite.findFirst.mockResolvedValue({ id: 'invite-1' });
-    prisma.artifact.count.mockResolvedValue(0);
+    prisma.artifact.findMany.mockResolvedValue([
+      {
+        id: 'artifact-1',
+        agentType: 'frontend',
+        reviewStatus: ArtifactReviewStatus.APPROVED,
+        revisionHandledAt: null,
+        validationStatus: ArtifactValidationStatus.PASSED,
+      },
+    ]);
     prisma.collaborationDocument.count.mockResolvedValue(0);
+    prisma.workOrder.findMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ agentType: WorkOrderAgentType.FRONTEND }]);
     prisma.projectDeliveryReview.upsert.mockResolvedValue({
       id: 'delivery-review-1',
       projectId: 'project-1',
@@ -1120,6 +1146,49 @@ describe('ProjectsService', () => {
     expect(prisma.project.update).toHaveBeenCalledWith({
       where: { id: 'project-1' },
       data: { status: ProjectStatus.DELIVERED },
+    });
+  });
+
+  it('findDeliveryReadiness reports concrete final delivery blockers', async () => {
+    prisma.project.findFirst.mockResolvedValue({ id: 'project-1' });
+    prisma.clientInvite.findFirst.mockResolvedValue({ id: 'invite-1' });
+    prisma.artifact.findMany.mockResolvedValue([
+      {
+        id: 'artifact-1',
+        agentType: 'frontend',
+        reviewStatus: ArtifactReviewStatus.REVISION_REQUESTED,
+        revisionHandledAt: null,
+        validationStatus: ArtifactValidationStatus.FAILED,
+      },
+    ]);
+    prisma.collaborationDocument.count.mockResolvedValue(1);
+    prisma.workOrder.findMany
+      .mockResolvedValueOnce([{ id: 'work-order-1' }])
+      .mockResolvedValueOnce([{ agentType: WorkOrderAgentType.BACKEND }]);
+    prisma.projectDeliveryReview.findUnique.mockResolvedValue({
+      status: ProjectDeliveryReviewStatus.REVISION_REQUESTED,
+    });
+
+    const readiness = await service.findDeliveryReadiness('project-1', clientUser);
+
+    expect(readiness.ready).toBe(false);
+    expect(readiness.blockers.map((blocker) => blocker.code)).toEqual([
+      'MISSING_REQUIRED_ARTIFACT_COVERAGE',
+      'PUBLISHED_ARTIFACTS_NOT_VALIDATED',
+      'PUBLISHED_ARTIFACTS_NOT_APPROVED',
+      'ARTIFACT_REVISIONS_OPEN',
+      'DOCUMENT_REVIEWS_OPEN',
+      'WORK_ORDERS_ACTIVE_OR_FAILED',
+      'DELIVERY_REVISION_OPEN',
+    ]);
+    expect(readiness.counts).toEqual({
+      publishedArtifacts: 1,
+      invalidPublishedArtifacts: 1,
+      unapprovedPublishedArtifacts: 1,
+      activeWorkOrders: 1,
+      openDocuments: 1,
+      openArtifactRevisions: 1,
+      missingAgentTypes: 1,
     });
   });
 

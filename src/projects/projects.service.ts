@@ -92,6 +92,39 @@ type ProjectLifecycleSummary = {
   };
 };
 
+type DeliveryReadinessBlocker = {
+  code: string;
+  message: string;
+  severity: 'BLOCKER' | 'WARNING';
+  count?: number;
+};
+
+type DeliveryReadinessSummary = {
+  ready: boolean;
+  projectId: string;
+  blockers: DeliveryReadinessBlocker[];
+  checks: {
+    acceptedInvite: boolean;
+    hasPublishedArtifacts: boolean;
+    publishedArtifactsValidated: boolean;
+    publishedArtifactsApproved: boolean;
+    requiredAgentCoverage: boolean;
+    documentsCleared: boolean;
+    workOrdersCleared: boolean;
+    revisionsCleared: boolean;
+    deliveryRevisionCleared: boolean;
+  };
+  counts: {
+    publishedArtifacts: number;
+    invalidPublishedArtifacts: number;
+    unapprovedPublishedArtifacts: number;
+    activeWorkOrders: number;
+    openDocuments: number;
+    openArtifactRevisions: number;
+    missingAgentTypes: number;
+  };
+};
+
 type ProjectListItem = Pick<Project, 'id' | 'companyName' | 'status' | 'createdAt' | 'updatedAt'> & {
   lifecycle: ProjectLifecycleSummary;
 };
@@ -1310,14 +1343,26 @@ export class ProjectsService {
     });
   }
 
+  async findDeliveryReadiness(
+    id: string,
+    user: AuthUser,
+  ): Promise<DeliveryReadinessSummary> {
+    await this.assertAccessible(id, user);
+    return this.buildDeliveryReadiness(id, user.role === UserRole.CLIENT ? user.id : undefined);
+  }
+
   async acceptDelivery(
     id: string,
     user: AuthUser,
     dto: ProjectDeliveryReviewNoteDto,
   ): Promise<ProjectDeliveryReview> {
     await this.assertAccessible(id, user);
-    await this.assertAcceptedClientInvite(id, user.id);
-    await this.assertDeliveryReviewsCleared(id);
+    const readiness = await this.buildDeliveryReadiness(id, user.id);
+    if (!readiness.ready) {
+      throw new BadRequestException(
+        readiness.blockers[0]?.message ?? 'Project is not ready for final delivery acceptance',
+      );
+    }
 
     const note = dto.note?.trim() || null;
     const review = await this.prisma.projectDeliveryReview.upsert({
@@ -2109,56 +2154,191 @@ export class ProjectsService {
     return { ...orchestrationStatus, ...project };
   }
 
-  private async assertDeliveryReviewsCleared(projectId: string): Promise<void> {
-    const openArtifactReviews = await this.prisma.artifact.count({
-      where: {
-        projectId,
-        clientVisible: true,
-        OR: [
-          { reviewStatus: ArtifactReviewStatus.PENDING },
-          {
-            reviewStatus: ArtifactReviewStatus.REVISION_REQUESTED,
-            revisionHandledAt: null,
+  private async buildDeliveryReadiness(
+    projectId: string,
+    clientUserId?: string,
+  ): Promise<DeliveryReadinessSummary> {
+    const [acceptedInvite, publishedArtifacts, activeWorkOrders, openDocuments, deliveryReview] =
+      await Promise.all([
+        this.prisma.clientInvite.findFirst({
+          where: {
+            projectId,
+            status: ClientInviteStatus.ACCEPTED,
+            ...(clientUserId ? { acceptedById: clientUserId } : {}),
           },
-        ],
-      },
-    });
+          select: { id: true },
+        }),
+        this.prisma.artifact.findMany({
+          where: {
+            projectId,
+            clientVisible: true,
+            outputReviewStatus: ArtifactOutputReviewStatus.PUBLISHED,
+          },
+          select: {
+            id: true,
+            agentType: true,
+            reviewStatus: true,
+            revisionHandledAt: true,
+            validationStatus: true,
+          },
+        }),
+        this.prisma.workOrder.findMany({
+          where: {
+            projectId,
+            status: {
+              in: [
+                WorkOrderStatus.READY,
+                WorkOrderStatus.DISPATCHED,
+                WorkOrderStatus.FAILED,
+              ],
+            },
+          },
+          select: { id: true },
+        }),
+        this.prisma.collaborationDocument.count({
+          where: {
+            projectId,
+            clientVisible: true,
+            status: {
+              notIn: [
+                CollaborationDocumentStatus.APPROVED,
+                CollaborationDocumentStatus.ARCHIVED,
+              ],
+            },
+          },
+        }),
+        this.prisma.projectDeliveryReview.findUnique({
+          where: { projectId },
+          select: { status: true },
+        }),
+      ]);
 
-    if (openArtifactReviews > 0) {
-      throw new BadRequestException('Resolve or approve all shared artifact reviews before accepting delivery');
-    }
-
-    const openDocumentReviews = await this.prisma.collaborationDocument.count({
+    const completedWorkOrders = await this.prisma.workOrder.findMany({
       where: {
         projectId,
-        clientVisible: true,
-        status: {
-          notIn: [
-            CollaborationDocumentStatus.APPROVED,
-            CollaborationDocumentStatus.ARCHIVED,
-          ],
-        },
+        status: WorkOrderStatus.COMPLETED,
       },
+      select: { agentType: true },
     });
 
-    if (openDocumentReviews > 0) {
-      throw new BadRequestException('Resolve all client-visible document reviews before accepting delivery');
-    }
-  }
+    const publishedAgentTypes = new Set(
+      publishedArtifacts.map((artifact) => this.agentTypeFromArtifact(artifact.agentType)),
+    );
+    const requiredAgentTypes = new Set(completedWorkOrders.map((workOrder) => workOrder.agentType));
+    const missingAgentTypes = [...requiredAgentTypes].filter(
+      (agentType) => !publishedAgentTypes.has(agentType),
+    );
+    const invalidPublishedArtifacts = publishedArtifacts.filter(
+      (artifact) => artifact.validationStatus !== ArtifactValidationStatus.PASSED,
+    );
+    const unapprovedPublishedArtifacts = publishedArtifacts.filter(
+      (artifact) => artifact.reviewStatus !== ArtifactReviewStatus.APPROVED,
+    );
+    const openArtifactRevisions = publishedArtifacts.filter(
+      (artifact) =>
+        artifact.reviewStatus === ArtifactReviewStatus.REVISION_REQUESTED &&
+        !artifact.revisionHandledAt,
+    );
 
-  private async assertAcceptedClientInvite(projectId: string, userId: string): Promise<void> {
-    const invite = await this.prisma.clientInvite.findFirst({
-      where: {
-        projectId,
-        acceptedById: userId,
-        status: ClientInviteStatus.ACCEPTED,
+    const checks = {
+      acceptedInvite: Boolean(acceptedInvite),
+      hasPublishedArtifacts: publishedArtifacts.length > 0,
+      publishedArtifactsValidated: invalidPublishedArtifacts.length === 0,
+      publishedArtifactsApproved: unapprovedPublishedArtifacts.length === 0,
+      requiredAgentCoverage: missingAgentTypes.length === 0,
+      documentsCleared: openDocuments === 0,
+      workOrdersCleared: activeWorkOrders.length === 0,
+      revisionsCleared: openArtifactRevisions.length === 0,
+      deliveryRevisionCleared:
+        deliveryReview?.status !== ProjectDeliveryReviewStatus.REVISION_REQUESTED,
+    };
+    const blockers: DeliveryReadinessBlocker[] = [];
+
+    if (!checks.acceptedInvite) {
+      blockers.push({
+        code: 'CLIENT_INVITE_NOT_ACCEPTED',
+        message: 'Client invite must be accepted before final delivery can be accepted',
+        severity: 'BLOCKER',
+      });
+    }
+    if (!checks.hasPublishedArtifacts) {
+      blockers.push({
+        code: 'NO_PUBLISHED_ARTIFACTS',
+        message: 'Publish at least one client-visible artifact before accepting delivery',
+        severity: 'BLOCKER',
+      });
+    }
+    if (!checks.requiredAgentCoverage) {
+      blockers.push({
+        code: 'MISSING_REQUIRED_ARTIFACT_COVERAGE',
+        message: 'Publish client-visible artifacts for every completed agent workstream before accepting delivery',
+        severity: 'BLOCKER',
+        count: missingAgentTypes.length,
+      });
+    }
+    if (!checks.publishedArtifactsValidated) {
+      blockers.push({
+        code: 'PUBLISHED_ARTIFACTS_NOT_VALIDATED',
+        message: 'All published artifacts must pass validation before accepting delivery',
+        severity: 'BLOCKER',
+        count: invalidPublishedArtifacts.length,
+      });
+    }
+    if (!checks.publishedArtifactsApproved) {
+      blockers.push({
+        code: 'PUBLISHED_ARTIFACTS_NOT_APPROVED',
+        message: 'All published artifacts must be approved by the client before accepting delivery',
+        severity: 'BLOCKER',
+        count: unapprovedPublishedArtifacts.length,
+      });
+    }
+    if (!checks.revisionsCleared) {
+      blockers.push({
+        code: 'ARTIFACT_REVISIONS_OPEN',
+        message: 'Resolve all open artifact revision requests before accepting delivery',
+        severity: 'BLOCKER',
+        count: openArtifactRevisions.length,
+      });
+    }
+    if (!checks.documentsCleared) {
+      blockers.push({
+        code: 'DOCUMENT_REVIEWS_OPEN',
+        message: 'Resolve all client-visible document reviews before accepting delivery',
+        severity: 'BLOCKER',
+        count: openDocuments,
+      });
+    }
+    if (!checks.workOrdersCleared) {
+      blockers.push({
+        code: 'WORK_ORDERS_ACTIVE_OR_FAILED',
+        message: 'Complete, retry, or cancel all active and failed work orders before accepting delivery',
+        severity: 'BLOCKER',
+        count: activeWorkOrders.length,
+      });
+    }
+    if (!checks.deliveryRevisionCleared) {
+      blockers.push({
+        code: 'DELIVERY_REVISION_OPEN',
+        message: 'Resolve the project-level delivery revision request before accepting delivery',
+        severity: 'BLOCKER',
+      });
+    }
+
+    return {
+      ready: blockers.every((blocker) => blocker.severity !== 'BLOCKER'),
+      projectId,
+      blockers,
+      checks,
+      counts: {
+        publishedArtifacts: publishedArtifacts.length,
+        invalidPublishedArtifacts: invalidPublishedArtifacts.length,
+        unapprovedPublishedArtifacts: unapprovedPublishedArtifacts.length,
+        activeWorkOrders: activeWorkOrders.length,
+        openDocuments,
+        openArtifactRevisions: openArtifactRevisions.length,
+        missingAgentTypes: missingAgentTypes.length,
       },
-      select: { id: true },
-    });
-
-    if (!invite) {
-      throw new BadRequestException('Client invite must be accepted before final delivery can be accepted');
-    }
+    };
   }
 
   private async findRunnableProject(id: string, user: AuthUser): Promise<{
