@@ -483,6 +483,16 @@ describe('OrchestrationService', () => {
     }));
   });
 
+  it('startRun rejects LLM orchestration when GitHub delivery is not configured', async () => {
+    process.env.AGENT_PROVIDER = 'llm';
+    process.env.OPENROUTER_API_KEY = 'test-openrouter-key';
+
+    await expect(
+      service.startRun('test-project-id', 'Build a shop', 'nextjs-nestjs', 'TestCo'),
+    ).rejects.toThrow('GitHub delivery requires');
+    expect(prisma.project.update).not.toHaveBeenCalled();
+  });
+
   it('executeWorkOrder records execution logs, creates an artifact, and links it back to work order and task', async () => {
     prisma.workOrder.findFirst.mockResolvedValue({
       id: 'work-order-1',

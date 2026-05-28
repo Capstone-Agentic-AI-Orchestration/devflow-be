@@ -232,6 +232,15 @@ export class OrchestrationService implements OnModuleInit {
   ): Promise<string> {
     const runId = createId();
     this.agentProviderRegistry.getActiveProviderOrThrow();
+    if (this.agentProviderMode() === 'llm') {
+      const githubDelivery = this.github.getDeliveryStatus();
+      if (!githubDelivery.available) {
+        throw new Error(
+          githubDelivery.reason ??
+            'GitHub delivery is not configured for LLM orchestration.',
+        );
+      }
+    }
 
     this.logger.log(
       `Starting run ${runId} for project ${projectId} (${companyName})`,

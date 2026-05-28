@@ -26,6 +26,56 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function parseOpenRouterError(body) {
+  try {
+    const parsed = JSON.parse(body);
+    const message = parsed?.error?.message ?? parsed?.message;
+    return typeof message === 'string' ? message : body;
+  } catch {
+    return body;
+  }
+}
+
+async function assertOpenRouterPreflight() {
+  if (process.env.LLM_PROVIDER !== 'openrouter') return;
+
+  const apiKey = process.env.OPENROUTER_API_KEY?.trim();
+  if (!apiKey) {
+    console.log('LangGraph GitHub E2E smoke skipped: OPENROUTER_API_KEY is not configured.');
+    process.exit(0);
+  }
+
+  const baseUrl = process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1';
+  const model = process.env.OPENROUTER_MODEL || 'deepseek/deepseek-v4-flash:free';
+  const response = await fetch(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+      'HTTP-Referer': process.env.OPENROUTER_SITE_URL || 'http://localhost',
+      'X-Title': process.env.OPENROUTER_APP_NAME || 'DevFlow LangGraph Smoke',
+    },
+    body: JSON.stringify({
+      model,
+      messages: [
+        {
+          role: 'user',
+          content: 'Return {"ok":true} as JSON.',
+        },
+      ],
+      max_tokens: 16,
+      response_format: { type: 'json_object' },
+    }),
+  });
+
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(
+      `OpenRouter preflight failed (${response.status}): ${parseOpenRouterError(body).slice(0, 500)}`,
+    );
+  }
+}
+
 async function waitForProjectStatus(prisma, orchestration, projectId, expectedStatuses, timeoutMs, label) {
   const startedAt = Date.now();
   let lastProject = null;
@@ -70,6 +120,8 @@ process.env.LLM_PROVIDER = process.env.LLM_PROVIDER || 'openrouter';
 if (process.env.LANGGRAPH_GITHUB_SMOKE_TRACE !== 'true') {
   process.env.LANGCHAIN_TRACING_V2 = 'false';
 }
+
+await assertOpenRouterPreflight();
 
 const [{ NestFactory }, { AppModule }, { PrismaService }, { OrchestrationService }, { GithubService }] =
   await Promise.all([
