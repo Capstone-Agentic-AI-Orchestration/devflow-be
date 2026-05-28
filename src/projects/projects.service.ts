@@ -7,7 +7,7 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { OrchestrationService, OrchestrationStatus } from '../orchestration/orchestration.service';
 import { CreateProjectDto } from './dto/create-project.dto';
-import { ArtifactOutputReviewStatus, ArtifactReviewStatus, ClientInviteStatus, CollaborationDocumentStatus, NotificationType, OrchestrationRunTrigger, ProjectDeliveryReview, ProjectDeliveryReviewStatus, ProjectStatus, ProjectTimelineEvent, ProjectTimelineEventType, ProjectTimelineVisibility, ProjectTaskActivity, ProjectTaskActivityType, ProjectTaskStatus, Project, GateEvent, Artifact, EventLog, Prisma, ProjectKickoff, ProjectKickoffStatus, ProjectTask, UserRole, WorkOrder, WorkOrderAgentType, WorkOrderPriority, WorkOrderStatus } from '@prisma/client';
+import { ArtifactOutputReviewStatus, ArtifactReviewStatus, ArtifactValidationStatus, ClientInviteStatus, CollaborationDocumentStatus, NotificationType, OrchestrationRunTrigger, ProjectDeliveryReview, ProjectDeliveryReviewStatus, ProjectStatus, ProjectTimelineEvent, ProjectTimelineEventType, ProjectTimelineVisibility, ProjectTaskActivity, ProjectTaskActivityType, ProjectTaskStatus, Project, GateEvent, Artifact, EventLog, Prisma, ProjectKickoff, ProjectKickoffStatus, ProjectTask, UserRole, WorkOrder, WorkOrderAgentType, WorkOrderPriority, WorkOrderStatus } from '@prisma/client';
 import { AuthUser } from '../auth/auth.types';
 import { UpdateProjectDto } from './dto/update-project.dto';
 import { AddProjectMemberDto } from './dto/project-member.dto';
@@ -128,6 +128,9 @@ type ArtifactListItem =
       | 'outputReviewNote'
       | 'outputReviewedAt'
       | 'outputReviewedById'
+      | 'validationStatus'
+      | 'validationSummary'
+      | 'validationErrors'
       | 'publishedAt'
       | 'publishedById'
       | 'revisionHandledAt'
@@ -160,7 +163,7 @@ type ProjectTimelineEventWithActor = ProjectTimelineEvent & {
 
 type WorkOrderWithRelations = WorkOrder & {
   task: { id: string; title: string; assignedToId: string | null; status: ProjectTaskStatus } | null;
-  artifact: { id: string; filePath: string; displayName: string | null; reviewStatus: ArtifactReviewStatus; outputReviewStatus: ArtifactOutputReviewStatus } | null;
+  artifact: { id: string; filePath: string; displayName: string | null; reviewStatus: ArtifactReviewStatus; outputReviewStatus: ArtifactOutputReviewStatus; validationStatus: ArtifactValidationStatus } | null;
   createdBy: { id: string; email: string | null; fullName: string | null; role: UserRole } | null;
 };
 
@@ -232,6 +235,7 @@ const workOrderInclude = {
       displayName: true,
       reviewStatus: true,
       outputReviewStatus: true,
+      validationStatus: true,
     },
   },
   createdBy: {
@@ -401,6 +405,7 @@ export class ProjectsService {
                 displayName: true,
                 outputReviewStatus: true,
                 reviewStatus: true,
+                validationStatus: true,
               },
             },
           },
@@ -436,6 +441,7 @@ export class ProjectsService {
                 displayName: true,
                 outputReviewStatus: true,
                 reviewStatus: true,
+                validationStatus: true,
                 createdAt: true,
               },
             },
@@ -912,6 +918,9 @@ export class ProjectsService {
           outputReviewNote: true,
           outputReviewedAt: true,
           outputReviewedById: true,
+          validationStatus: true,
+          validationSummary: true,
+          validationErrors: true,
           publishedAt: true,
           publishedById: true,
           revisionHandledAt: true,
@@ -1198,6 +1207,9 @@ export class ProjectsService {
         outputReviewNote: true,
         outputReviewedAt: true,
         outputReviewedById: true,
+        validationStatus: true,
+        validationSummary: true,
+        validationErrors: true,
         publishedAt: true,
         publishedById: true,
         revisionHandledAt: true,

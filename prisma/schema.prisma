@@ -172,6 +172,9 @@ model Artifact {
   outputReviewNote String?           @db.Text
   outputReviewedAt DateTime?
   outputReviewedById String?         @db.Uuid
+  validationStatus ArtifactValidationStatus @default(PENDING)
+  validationSummary String?           @db.Text
+  validationErrors Json               @default("[]")
   publishedAt DateTime?
   publishedById String?              @db.Uuid
   revisionHandledAt DateTime?
@@ -185,6 +188,7 @@ model Artifact {
   @@index([projectId])
   @@index([projectId, clientVisible])
   @@index([projectId, outputReviewStatus])
+  @@index([projectId, validationStatus])
 }
 
 enum ArtifactReviewStatus {
@@ -198,6 +202,12 @@ enum ArtifactOutputReviewStatus {
   APPROVED
   REWORK_REQUESTED
   PUBLISHED
+}
+
+enum ArtifactValidationStatus {
+  PENDING
+  PASSED
+  FAILED
 }
 
 enum ProjectStatus {

@@ -11,10 +11,11 @@ import { DatabaseAgentNode } from '../src/orchestration/nodes/database-agent.nod
 import { ArchitectureAgentNode } from '../src/orchestration/nodes/architecture-agent.node';
 import { ValidatorNode } from '../src/orchestration/nodes/validator.node';
 import { GithubCommitNode } from '../src/orchestration/nodes/github-commit.node';
+import { ArtifactContractValidator } from '../src/orchestration/providers/artifact-contract.validator';
 import { MockAgentProvider } from '../src/orchestration/providers/mock-agent.provider';
 import { NotificationsService } from '../src/notifications/notifications.service';
 import type { RequirementsDocument, ProjectContract, GeneratedArtifact } from '../src/orchestration/graph/devflow.state';
-import { ArtifactReviewStatus, ProjectTaskStatus, WorkOrderAgentType, WorkOrderPriority, WorkOrderStatus } from '@prisma/client';
+import { ArtifactValidationStatus, ArtifactReviewStatus, ProjectTaskStatus, WorkOrderAgentType, WorkOrderPriority, WorkOrderStatus } from '@prisma/client';
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -201,6 +202,7 @@ describe('OrchestrationService', () => {
       validator as unknown as ValidatorNode,
       githubCommit as unknown as GithubCommitNode,
       memory as unknown as MemoryService,
+      new ArtifactContractValidator(),
       mockAgentProvider,
       notifications as unknown as NotificationsService,
       null,
@@ -382,6 +384,8 @@ describe('OrchestrationService', () => {
         agentType: 'frontend',
         filePath: 'work-orders/work-order-1/frontend-output.tsx',
         clientVisible: false,
+        validationStatus: ArtifactValidationStatus.PASSED,
+        validationSummary: 'FRONTEND artifact contract passed',
       }),
     });
     expect(prisma.workOrder.update).toHaveBeenCalledWith({
@@ -408,6 +412,62 @@ describe('OrchestrationService', () => {
           workOrderId: 'work-order-1',
           artifactId: 'artifact-generated-1',
         }),
+      }),
+    });
+  });
+
+  it('executeWorkOrder fails the order when generated output violates the artifact contract', async () => {
+    prisma.workOrder.findFirst.mockResolvedValue({
+      id: 'work-order-1',
+      projectId: 'test-project-id',
+      taskId: 'task-1',
+      artifactId: null,
+      title: 'Build frontend shell',
+      instructions: 'Create the first dashboard shell.',
+      agentType: WorkOrderAgentType.FRONTEND,
+      priority: WorkOrderPriority.HIGH,
+      status: WorkOrderStatus.READY,
+      executionAttempt: 0,
+      dispatchedAt: null,
+      project: {
+        id: 'test-project-id',
+        companyName: 'TestCo',
+        brief: 'Build a shop',
+        stackKey: 'nextjs-nestjs',
+      },
+      task: {
+        id: 'task-1',
+        title: 'Frontend dashboard',
+        description: 'Client dashboard task.',
+        assignedToId: 'dev-1',
+        status: ProjectTaskStatus.TODO,
+      },
+      artifact: null,
+    });
+    vi.spyOn(mockAgentProvider, 'generateWorkOrderOutput').mockReturnValueOnce({
+      filePath: 'bad-output.txt',
+      displayName: 'Bad output',
+      language: 'text',
+      content: 'too short',
+    });
+
+    await expect(
+      service.executeWorkOrder('test-project-id', 'work-order-1', 'pm-1'),
+    ).rejects.toThrow('Artifact contract validation failed');
+
+    expect(prisma.artifact.create).not.toHaveBeenCalled();
+    expect(prisma.workOrder.update).toHaveBeenCalledWith({
+      where: { id: 'work-order-1' },
+      data: expect.objectContaining({
+        status: WorkOrderStatus.FAILED,
+        executionError: expect.stringContaining('Artifact contract validation failed'),
+      }),
+    });
+    expect(prisma.workOrderExecution.update).toHaveBeenCalledWith({
+      where: { executionRunId: expect.any(String) },
+      data: expect.objectContaining({
+        status: 'FAILED',
+        error: expect.stringContaining('Artifact contract validation failed'),
       }),
     });
   });

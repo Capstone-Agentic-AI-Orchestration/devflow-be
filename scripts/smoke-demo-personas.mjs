@@ -192,7 +192,9 @@ async function smoke() {
   assertCheck(Boolean(executedWorkOrder.artifactId), 'Executed work order should link to a generated artifact.');
   const postDispatchArtifacts = await apiGet(`/projects/${projectId}/artifacts`, pmToken);
   const postDispatchEvents = await apiGet(`/projects/${projectId}/events`, pmToken);
-  assertCheck(postDispatchArtifacts.some((artifact) => artifact.id === executedWorkOrder.artifactId), 'Generated work-order artifact should be visible to PM artifacts.');
+  const generatedDispatchArtifact = postDispatchArtifacts.find((artifact) => artifact.id === executedWorkOrder.artifactId);
+  assertCheck(generatedDispatchArtifact, 'Generated work-order artifact should be visible to PM artifacts.');
+  assertCheck(generatedDispatchArtifact.validationStatus === 'PASSED', `Generated work-order artifact should pass contract validation, got ${generatedDispatchArtifact.validationStatus}.`);
   assertCheck(postDispatchEvents.some((event) => event.eventType === 'COMPLETED' && event.costMeta?.workOrderId === dispatchableWorkOrder.id), 'Work-order execution should record a COMPLETED event log.');
   const orchestrationRunsAfterDispatch = await apiGet(`/projects/${projectId}/orchestration/runs`, pmToken);
   assertCheck(orchestrationRunsAfterDispatch.some((run) => run.executions?.some((execution) => execution.executionRunId === executedWorkOrder.executionRunId)), 'PM should see durable run history for manual work-order dispatch.');
@@ -219,6 +221,9 @@ async function smoke() {
   const retriedWorkOrder = await apiPost(`/projects/${projectId}/work-orders/${retrySeedWorkOrder.id}/retry`, pmToken, {}, 202);
   assertCheck(retriedWorkOrder.status === 'COMPLETED', `Retried work order should complete through mock agents, got ${retriedWorkOrder.status}.`);
   assertCheck(Boolean(retriedWorkOrder.artifactId), 'Retried work order should produce an artifact.');
+  const postRetryArtifacts = await apiGet(`/projects/${projectId}/artifacts`, pmToken);
+  const retriedArtifact = postRetryArtifacts.find((artifact) => artifact.id === retriedWorkOrder.artifactId);
+  assertCheck(retriedArtifact?.validationStatus === 'PASSED', `Retried work-order artifact should pass contract validation, got ${retriedArtifact?.validationStatus}.`);
   const retryRuns = await apiGet(`/projects/${projectId}/orchestration/runs`, pmToken);
   assertCheck(retryRuns.some((run) => run.trigger === 'RETRY_FAILED_WORK_ORDER' && run.executions?.some((execution) => execution.workOrderId === retrySeedWorkOrder.id && execution.status === 'SUCCEEDED')), 'Run history should record the failed-work-order retry execution.');
 

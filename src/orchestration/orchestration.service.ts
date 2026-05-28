@@ -23,9 +23,11 @@ import { GithubCommitNode } from './nodes/github-commit.node';
 import { MemoryService } from '../memory/memory.service';
 import { DevFlowGateway } from '../gateway/devflow.gateway';
 import { NotificationsService } from '../notifications/notifications.service';
+import { ArtifactContractValidator } from './providers/artifact-contract.validator';
 import { MockAgentProvider } from './providers/mock-agent.provider';
 import { AgentProviderMode } from './providers/agent-provider.types';
 import {
+  ArtifactValidationStatus,
   NotificationType,
   OrchestrationRunStatus,
   OrchestrationRunTrigger,
@@ -153,6 +155,7 @@ export class OrchestrationService implements OnModuleInit {
     private readonly validator: ValidatorNode,
     private readonly githubCommit: GithubCommitNode,
     private readonly memory: MemoryService,
+    private readonly artifactContractValidator: ArtifactContractValidator,
     private readonly mockAgentProvider: MockAgentProvider,
     private readonly notifications: NotificationsService,
     // Optional: WebSocket gateway may not be present in all environments
@@ -650,7 +653,7 @@ export class OrchestrationService implements OnModuleInit {
 
     try {
       const completedAt = new Date();
-      const output = this.mockAgentProvider.generateWorkOrderOutput({
+      const agentContext = {
         project: workOrder.project,
         workOrder: {
           id: workOrder.id,
@@ -662,7 +665,13 @@ export class OrchestrationService implements OnModuleInit {
         task: workOrder.task,
         sourceArtifact: workOrder.artifact,
         executionRunId,
-      });
+      };
+      const output = this.mockAgentProvider.generateWorkOrderOutput(agentContext);
+      const validation = this.artifactContractValidator.validate(output, agentContext);
+
+      if (!validation.valid) {
+        throw new Error(`Artifact contract validation failed: ${validation.errors.join('; ')}`);
+      }
 
       const artifact = await this.prisma.artifact.create({
         data: {
@@ -672,6 +681,9 @@ export class OrchestrationService implements OnModuleInit {
           displayName: output.displayName,
           content: output.content,
           clientVisible: false,
+          validationStatus: ArtifactValidationStatus.PASSED,
+          validationSummary: validation.summary,
+          validationErrors: validation.errors,
         },
       });
 
