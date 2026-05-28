@@ -18,6 +18,7 @@
     "seed:demo:check": "node scripts/check-demo-personas.mjs",
     "seed:demo:smoke": "node scripts/smoke-demo-personas.mjs",
     "smoke:openrouter": "npm run build && node scripts/smoke-openrouter-provider.mjs",
+    "smoke:github": "npm run build && node scripts/smoke-github-delivery.mjs",
     "prisma:migrate": "prisma migrate dev",
     "prisma:generate": "prisma generate",
     "prisma:studio": "prisma studio"

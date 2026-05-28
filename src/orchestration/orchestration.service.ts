@@ -23,6 +23,7 @@ import { GithubCommitNode } from './nodes/github-commit.node';
 import { MemoryService } from '../memory/memory.service';
 import { DevFlowGateway } from '../gateway/devflow.gateway';
 import { NotificationsService } from '../notifications/notifications.service';
+import { GithubDeliveryStatus, GithubService } from '../github/github.service';
 import { AgentProviderRegistry } from './providers/agent-provider.registry';
 import { ArtifactContractValidator } from './providers/artifact-contract.validator';
 import { AgentProviderMode, AgentProviderStatus } from './providers/agent-provider.types';
@@ -94,6 +95,10 @@ export interface SupervisorRecoveryResult {
   status: OrchestrationRunStatus;
   error: string | null;
 }
+
+export type OrchestrationProviderStatus = AgentProviderStatus & {
+  githubDelivery: GithubDeliveryStatus;
+};
 
 const MOCK_NODE = {
   LOAD_READY_WORK_ORDERS: 'load_ready_work_orders',
@@ -181,12 +186,16 @@ export class OrchestrationService implements OnModuleInit {
     private readonly artifactContractValidator: ArtifactContractValidator,
     private readonly agentProviderRegistry: AgentProviderRegistry,
     private readonly notifications: NotificationsService,
+    private readonly github: GithubService,
     // Optional: WebSocket gateway may not be present in all environments
     @Optional() private readonly gateway: DevFlowGateway | null,
   ) {}
 
-  getProviderStatus(): AgentProviderStatus {
-    return this.agentProviderRegistry.getStatus();
+  getProviderStatus(): OrchestrationProviderStatus {
+    return {
+      ...this.agentProviderRegistry.getStatus(),
+      githubDelivery: this.github.getDeliveryStatus(),
+    };
   }
 
   async onModuleInit(): Promise<void> {

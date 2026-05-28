@@ -16,6 +16,7 @@ import { ArtifactContractValidator } from '../src/orchestration/providers/artifa
 import { LlmAgentProvider } from '../src/orchestration/providers/llm-agent.provider';
 import { MockAgentProvider } from '../src/orchestration/providers/mock-agent.provider';
 import { NotificationsService } from '../src/notifications/notifications.service';
+import { GithubService } from '../src/github/github.service';
 import type { RequirementsDocument, ProjectContract, GeneratedArtifact } from '../src/orchestration/graph/devflow.state';
 import { ArtifactValidationStatus, ArtifactReviewStatus, OrchestrationRunStatus, OrchestrationRunTrigger, ProjectStatus, ProjectTaskStatus, WorkOrderAgentType, WorkOrderExecutionStatus, WorkOrderPriority, WorkOrderStatus } from '@prisma/client';
 
@@ -135,6 +136,19 @@ function makeNotificationsMock() {
   };
 }
 
+function makeGithubMock() {
+  return {
+    getDeliveryStatus: vi.fn().mockReturnValue({
+      configured: false,
+      available: false,
+      owner: null,
+      ownerSource: null,
+      missingRequirements: ['GITHUB_APP_ID', 'GITHUB_PRIVATE_KEY', 'GITHUB_INSTALLATION_ID', 'GITHUB_ORG'],
+      reason: 'GitHub delivery requires GITHUB_APP_ID, GITHUB_PRIVATE_KEY, GITHUB_INSTALLATION_ID, GITHUB_ORG.',
+    }),
+  };
+}
+
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 describe('OrchestrationService', () => {
@@ -152,6 +166,7 @@ describe('OrchestrationService', () => {
   let mockAgentProvider: MockAgentProvider;
   let agentProviderRegistry: AgentProviderRegistry;
   let notifications: ReturnType<typeof makeNotificationsMock>;
+  let github: ReturnType<typeof makeGithubMock>;
   let originalAgentProvider: string | undefined;
   let originalLlmProvider: string | undefined;
   let originalOpenRouterApiKey: string | undefined;
@@ -187,6 +202,7 @@ describe('OrchestrationService', () => {
       new LlmAgentProvider(),
     );
     notifications = makeNotificationsMock();
+    github = makeGithubMock();
 
     requirementsParser = makeNodeMock({ requirements: MOCK_REQUIREMENTS });
     contractNegotiator = makeNodeMock({ contract: MOCK_CONTRACT });
@@ -238,6 +254,7 @@ describe('OrchestrationService', () => {
       new ArtifactContractValidator(),
       agentProviderRegistry,
       notifications as unknown as NotificationsService,
+      github as unknown as GithubService,
       null,
     );
 
@@ -421,6 +438,11 @@ describe('OrchestrationService', () => {
         model: 'deepseek/deepseek-v4-flash:free',
       }),
     ]));
+    expect(status.githubDelivery).toEqual(expect.objectContaining({
+      configured: false,
+      available: false,
+      missingRequirements: expect.arrayContaining(['GITHUB_ORG']),
+    }));
   });
 
   it('getProviderStatus reports requested OpenRouter mode unavailable without API key', () => {

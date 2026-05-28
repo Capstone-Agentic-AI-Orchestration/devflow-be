@@ -54,6 +54,7 @@ export default () => {
       installationId: env.data.GITHUB_INSTALLATION_ID
         ? parseInt(env.data.GITHUB_INSTALLATION_ID, 10)
         : undefined,
+      org: env.data.GITHUB_ORG || undefined,
     },
     // Phase 2E — LangSmith tracing (auto-instrumented via env vars)
     langsmith: {

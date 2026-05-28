@@ -77,6 +77,8 @@ LANGCHAIN_PROJECT="devflow"
 
 The LangGraph path defines DevFlow's own agents: requirements parser, contract negotiator, frontend, backend, database, architecture, validator, and GitHub commit. LangGraph controls ordering, parallel fan-out, retries, and human approval gates. OpenRouter only supplies the model calls inside those custom agents. After Gate 2 approval, the GitHub commit node creates a private repository through the configured GitHub App, commits generated artifacts, injects CI, and stores `repoUrl` on the project.
 
+GitHub delivery requires `GITHUB_APP_ID`, base64-encoded `GITHUB_PRIVATE_KEY`, `GITHUB_INSTALLATION_ID`, and `GITHUB_ORG`. The orchestration provider endpoint includes `githubDelivery` readiness details so the app can show missing setup before Gate 2 delivery fails.
+
 ## Scripts
 
 ```powershell
@@ -92,6 +94,7 @@ npm run seed:demo
 npm run seed:demo:check
 npm run seed:demo:smoke
 npm run smoke:openrouter
+npm run smoke:github
 ```
 
 ## Persona Demo Data

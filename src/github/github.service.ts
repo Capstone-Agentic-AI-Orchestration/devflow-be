@@ -4,6 +4,15 @@ import { Octokit } from '@octokit/rest';
 import { createAppAuth } from '@octokit/auth-app';
 import { GitHubArtifact } from './github.types';
 
+export interface GithubDeliveryStatus {
+  configured: boolean;
+  available: boolean;
+  owner: string | null;
+  ownerSource: 'env' | 'installation' | null;
+  missingRequirements: string[];
+  reason: string | null;
+}
+
 const CI_WORKFLOW_CONTENT = `name: CI
 
 on:
@@ -34,15 +43,22 @@ export class GithubService implements OnModuleInit {
   private octokit!: Octokit;
   private installationId!: number;
   private ownerLogin!: string;
+  private ownerSource: GithubDeliveryStatus['ownerSource'] = null;
+  private hasAppId = false;
+  private hasPrivateKey = false;
 
   constructor(private readonly configService: ConfigService) {}
 
   onModuleInit(): void {
     const appId = this.configService.get<string>('github.appId');
     const privateKey = this.configService.get<string>('github.privateKey');
+    this.hasAppId = Boolean(appId);
+    this.hasPrivateKey = Boolean(privateKey);
     this.installationId = this.configService.get<number>(
       'github.installationId',
     ) ?? 0;
+    this.ownerLogin = this.configService.get<string>('github.org') ?? '';
+    this.ownerSource = this.ownerLogin ? 'env' : null;
 
     if (!appId || !privateKey || !this.installationId) {
       this.logger.warn(
@@ -59,6 +75,21 @@ export class GithubService implements OnModuleInit {
         installationId: this.installationId,
       },
     });
+  }
+
+  getDeliveryStatus(): GithubDeliveryStatus {
+    const missingRequirements = this.missingRequirements();
+    const configured = missingRequirements.length === 0;
+    return {
+      configured,
+      available: configured,
+      owner: this.ownerLogin || null,
+      ownerSource: this.ownerSource,
+      missingRequirements,
+      reason: configured
+        ? null
+        : `GitHub delivery requires ${missingRequirements.join(', ')}.`,
+    };
   }
 
   private slugify(name: string): string {
@@ -80,6 +111,7 @@ export class GithubService implements OnModuleInit {
     });
     this.ownerLogin =
       data.account && 'login' in data.account ? data.account.login : '';
+    this.ownerSource = 'installation';
     return this.ownerLogin;
   }
 
@@ -179,10 +211,20 @@ export class GithubService implements OnModuleInit {
   }
 
   private assertConfigured(): void {
-    if (!this.octokit || !this.installationId) {
+    const missingRequirements = this.missingRequirements();
+    if (missingRequirements.length > 0) {
       throw new ServiceUnavailableException(
-        'GitHub commit automation is not configured',
+        `GitHub commit automation is not configured: missing ${missingRequirements.join(', ')}`,
       );
     }
+  }
+
+  private missingRequirements(): string[] {
+    const missing: string[] = [];
+    if (!this.hasAppId) missing.push('GITHUB_APP_ID');
+    if (!this.hasPrivateKey) missing.push('GITHUB_PRIVATE_KEY');
+    if (!this.installationId) missing.push('GITHUB_INSTALLATION_ID');
+    if (!this.ownerLogin) missing.push('GITHUB_ORG');
+    return [...new Set(missing)];
   }
 }

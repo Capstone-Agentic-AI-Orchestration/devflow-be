@@ -128,6 +128,14 @@ function makeOrchestrationMock() {
       missingRequirements: [],
       reason: null,
       providers: [],
+      githubDelivery: {
+        configured: false,
+        available: false,
+        owner: null,
+        ownerSource: null,
+        missingRequirements: ['GITHUB_ORG'],
+        reason: 'GitHub delivery requires GITHUB_ORG.',
+      },
     }),
     executeWorkOrder: vi.fn().mockResolvedValue({
       executionRunId: 'work-order-run-1',
