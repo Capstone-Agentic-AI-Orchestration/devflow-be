@@ -1,4 +1,5 @@
 import {
+  Inject,
   Injectable,
   Logger,
   OnModuleInit,
@@ -195,7 +196,8 @@ export class OrchestrationService implements OnModuleInit {
     private readonly agentProviderRegistry: AgentProviderRegistry,
     private readonly notifications: NotificationsService,
     private readonly github: GithubService,
-    @Optional() private readonly graphLlmProvider: GraphLlmProvider | null,
+    @Optional() @Inject(GraphLlmProvider)
+    private readonly graphLlmProvider: GraphLlmProvider | null,
     // Optional: WebSocket gateway may not be present in all environments
     @Optional() private readonly gateway: DevFlowGateway | null,
   ) {}
