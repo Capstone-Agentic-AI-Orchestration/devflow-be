@@ -2,6 +2,23 @@ import { envSchema, EnvSchema } from './env.schema';
 
 let _config: EnvSchema | null = null;
 
+export function normalizeGithubPrivateKey(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed) return undefined;
+
+  const rawPem = trimmed.replace(/\\n/g, '\n').trim();
+  if (rawPem.includes('-----BEGIN')) return rawPem;
+
+  const decodedPem = Buffer.from(trimmed, 'base64')
+    .toString('utf-8')
+    .trim()
+    .replace(/\\n/g, '\n')
+    .trim();
+  if (decodedPem.includes('-----BEGIN')) return decodedPem;
+
+  return rawPem;
+}
+
 export function getConfig(): EnvSchema {
   if (!_config) {
     const result = envSchema.safeParse(process.env);
@@ -27,6 +44,25 @@ export default () => {
     database: {
       url: env.data.DATABASE_URL,
     },
+    orchestration: {
+      agentProvider: env.data.AGENT_PROVIDER,
+      llmProvider: env.data.LLM_PROVIDER,
+      openrouter: {
+        apiKey: env.data.OPENROUTER_API_KEY,
+        baseUrl: env.data.OPENROUTER_BASE_URL,
+        model: env.data.OPENROUTER_MODEL,
+        fallbackModel: env.data.OPENROUTER_FALLBACK_MODEL || undefined,
+      },
+      opencode: {
+        apiKey: env.data.OPENCODE_API_KEY,
+        baseUrl: env.data.OPENCODE_BASE_URL,
+        model: env.data.OPENCODE_MODEL,
+        fallbackModel: env.data.OPENCODE_FALLBACK_MODEL || undefined,
+      },
+    },
+    supabase: {
+      url: env.data.SUPABASE_URL,
+    },
     anthropic: {
       apiKey: env.data.ANTHROPIC_API_KEY,
     },
@@ -34,11 +70,12 @@ export default () => {
       apiKey: env.data.OPENAI_API_KEY,
     },
     github: {
-      appId: env.data.GITHUB_APP_ID,
-      privateKey: Buffer.from(env.data.GITHUB_PRIVATE_KEY, 'base64').toString(
-        'utf-8',
-      ),
-      installationId: parseInt(env.data.GITHUB_INSTALLATION_ID, 10),
+      appId: env.data.GITHUB_APP_ID || undefined,
+      privateKey: normalizeGithubPrivateKey(env.data.GITHUB_PRIVATE_KEY),
+      installationId: env.data.GITHUB_INSTALLATION_ID
+        ? parseInt(env.data.GITHUB_INSTALLATION_ID, 10)
+        : undefined,
+      org: env.data.GITHUB_ORG || undefined,
     },
     // Phase 2E — LangSmith tracing (auto-instrumented via env vars)
     langsmith: {

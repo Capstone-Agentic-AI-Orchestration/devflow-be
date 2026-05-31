@@ -1,20 +1,11 @@
 import { Injectable, Logger } from '@nestjs/common';
-import Anthropic from '@anthropic-ai/sdk';
 import { PrismaService } from '../../prisma/prisma.service';
 import { DevFlowStateType, ProjectContract } from '../graph/devflow.state';
 import { MemoryService } from '../../memory/memory.service';
 import { EventLogService } from '../../supervisor/event-log.service';
+import { GraphLlmProvider } from '../providers/graph-llm.provider';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
-
-/**
- * ContractNegotiator uses claude-sonnet-4-6 (Phase 2D model tiering decision).
- * Rationale: contract quality determines ALL downstream artifact quality.
- * A well-formed fileManifest and acceptance criteria prevent validator failures
- * and reduce retries — the Sonnet cost at this single upstream node pays for
- * itself by avoiding 2–3 haiku retries on code generation nodes.
- */
-const CONTRACT_MODEL = 'claude-sonnet-4-6';
 
 const SYSTEM_PROMPT = `You are a senior software architect producing a detailed project contract.
 You respond ONLY with a valid JSON object — no markdown fences, no prose outside the JSON.
@@ -35,12 +26,12 @@ The JSON must match this exact shape:
 @Injectable()
 export class ContractNegotiatorNode {
   private readonly logger = new Logger(ContractNegotiatorNode.name);
-  private readonly anthropic = new Anthropic();
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly memory: MemoryService,
     private readonly eventLog: EventLogService,
+    private readonly graphLlm: GraphLlmProvider,
   ) {}
 
   async execute(
@@ -97,24 +88,13 @@ export class ContractNegotiatorNode {
         return { contract };
       }
 
-      // ── 2. LLM call with prompt caching ───────────────────────────────────
-      const response = await this.anthropic.messages.create({
-        model: CONTRACT_MODEL,
-        max_tokens: 4096,
-        system: [
-          {
-            type: 'text',
-            text: SYSTEM_PROMPT,
-            cache_control: { type: 'ephemeral' },
-          },
-          ...(memoryContext
-            ? [{ type: 'text' as const, text: memoryContext }]
-            : []),
-        ],
-        messages: [
-          {
-            role: 'user',
-            content: `Create a complete project contract for the following:
+      // ── 2. LLM call ───────────────────────────────────────────────────────
+      const result = await this.graphLlm.generateJson<Record<string, unknown>>({
+        agentName: 'contract_negotiator',
+        systemPrompt: memoryContext
+          ? `${SYSTEM_PROMPT}\n\nRelevant memory:\n${memoryContext}`
+          : SYSTEM_PROMPT,
+        userPrompt: `Create a complete project contract for the following:
 
 Company: ${state.companyName}
 Project ID: ${state.projectId}
@@ -128,31 +108,22 @@ ${requirementsSummary}
 Produce a fileManifest that lists every file that will be generated (frontend, backend, database files, and architecture docs).
 Include 8–20 files depending on complexity. Use realistic relative paths (e.g. "src/app/page.tsx", "src/modules/users/users.service.ts").
 Produce 5–10 acceptance criteria as clear, testable statements.`,
-          },
-        ],
+        expectedShape: 'object',
+        maxTokens: 4096,
       });
 
-      // ── 3. Parse ───────────────────────────────────────────────────────────
-      const rawContent = response.content[0];
-      if (rawContent.type !== 'text') {
-        throw new Error('Unexpected response type from Anthropic API');
-      }
+      const parsed = result.value;
 
-      const jsonText = rawContent.text
-        .replace(/^```(?:json)?\s*/i, '')
-        .replace(/\s*```\s*$/, '')
-        .trim();
-
-      const parsed = JSON.parse(jsonText) as Record<string, unknown>;
+      const rawFileManifest = Array.isArray(parsed['fileManifest'])
+        ? (parsed['fileManifest'] as unknown[]).filter((filePath): filePath is string => typeof filePath === 'string')
+        : [];
 
       const contract: ProjectContract = {
         projectId: state.projectId,
         projectName: typeof parsed['projectName'] === 'string' ? parsed['projectName'] : `${state.companyName} Project`,
         description: typeof parsed['description'] === 'string' ? parsed['description'] : state.brief,
         requirements: state.requirements,
-        fileManifest: Array.isArray(parsed['fileManifest'])
-          ? (parsed['fileManifest'] as string[])
-          : [],
+        fileManifest: this.normalizeFileManifest(rawFileManifest),
         acceptanceCriteria: Array.isArray(parsed['acceptanceCriteria'])
           ? (parsed['acceptanceCriteria'] as string[])
           : [],
@@ -164,12 +135,10 @@ Produce 5–10 acceptance criteria as clear, testable statements.`,
       );
 
       // Log COMPLETED with cost metadata — budget is updated atomically inside.
-      const usage = response.usage;
-      // Log COMPLETED — model field drives cost attribution in RunSupervisorService.
       await this.eventLog.logCompleted(state.projectId, 'contract_negotiator', {
-        inputTokens: usage.input_tokens,
-        outputTokens: usage.output_tokens,
-        model: CONTRACT_MODEL, // claude-sonnet-4-6 per Phase 2D tiering
+        inputTokens: result.usage.inputTokens,
+        outputTokens: result.usage.outputTokens,
+        model: result.model,
       });
 
       return { contract };
@@ -186,5 +155,35 @@ Produce 5–10 acceptance criteria as clear, testable statements.`,
 
       return { error: `ContractNegotiatorNode failed: ${message}` };
     }
+  }
+
+  private normalizeFileManifest(fileManifest: string[]): string[] {
+    const coreFiles = [
+      'src/app/page.tsx',
+      'src/app/layout.tsx',
+      'src/components/ui/Button.tsx',
+      'src/components/ui/Card.tsx',
+      'src/styles/globals.css',
+      'README-frontend.md',
+      'src/app.module.ts',
+      'src/main.ts',
+      'src/modules/core/core.module.ts',
+      'src/modules/core/core.controller.ts',
+      'src/modules/core/core.service.ts',
+      'src/modules/core/dto/create-item.dto.ts',
+      'README-backend.md',
+      'prisma/schema.prisma',
+      'prisma/migrations/0001_initial.sql',
+      'prisma/seed.ts',
+      'README-database.md',
+      'ARCHITECTURE.md',
+      'API.md',
+      'DEPLOYMENT.md',
+    ];
+    const supportedFile = (filePath: string) =>
+      /\.(tsx|jsx|css|scss|module\.css|module\.ts|controller\.ts|service\.ts|dto\.ts|guard\.ts|pipe\.ts|interceptor\.ts|prisma|sql|md)$/i.test(filePath) ||
+      /seed\.(ts|js)$/i.test(filePath);
+
+    return [...new Set([...coreFiles, ...fileManifest.filter(supportedFile)])].slice(0, 24);
   }
 }

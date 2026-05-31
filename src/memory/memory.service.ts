@@ -291,7 +291,7 @@ export class MemoryService {
       top &&
       top.memoryType === 'SKILL' &&
       (top.similarity ?? 0) >= MemoryService.SKIP_THRESHOLD &&
-      (top.metadata as Record<string, unknown>)['stackKey'] === stackKey
+      top.metadata['stackKey'] === stackKey
     ) {
       this.logger.log(
         `Skip-generation candidate found for ${agentType}/${fileQuery} (similarity=${top.similarity?.toFixed(3)})`,

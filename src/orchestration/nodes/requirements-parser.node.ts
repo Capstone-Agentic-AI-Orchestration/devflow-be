@@ -1,41 +1,26 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { ChatOpenAI } from '@langchain/openai';
-import { z } from 'zod';
 import { PrismaService } from '../../prisma/prisma.service';
 import { MemoryService } from '../../memory/memory.service';
 import {
   DevFlowStateType,
   RequirementsDocument,
-  TechStack,
 } from '../graph/devflow.state';
+import { GraphLlmProvider } from '../providers/graph-llm.provider';
 
-// ─── Zod Schema for Structured Output ────────────────────────────────────────
-
-const TechStackSchema = z.object({
-  frontend: z.string().describe('Frontend framework or library (e.g. Next.js, React, Vue)'),
-  backend: z.string().describe('Backend framework (e.g. NestJS, Express, FastAPI)'),
-  database: z.string().describe('Database technology (e.g. PostgreSQL, MongoDB, SQLite)'),
-  styling: z.string().describe('Styling approach (e.g. Tailwind CSS, styled-components, CSS Modules)'),
-});
-
-const RequirementsSchema = z.object({
-  projectType: z
-    .string()
-    .describe('Category of project, e.g. "SaaS web app", "REST API", "e-commerce platform"'),
-  features: z
-    .array(z.string())
-    .min(1)
-    .describe('List of distinct features/capabilities the project must have'),
-  techStack: TechStackSchema,
-  complexity: z
-    .enum(['simple', 'medium', 'complex'])
-    .describe('Overall complexity assessment'),
-  estimatedFiles: z
-    .number()
-    .int()
-    .positive()
-    .describe('Estimated number of source files to generate'),
-});
+const SYSTEM_PROMPT = `You are a software architect analyzing a project brief.
+Return a valid JSON object with this exact shape:
+{
+  "projectType": string,
+  "features": string[],
+  "techStack": {
+    "frontend": string,
+    "backend": string,
+    "database": string,
+    "styling": string
+  },
+  "complexity": "simple" | "medium" | "complex",
+  "estimatedFiles": number
+}`;
 
 // ─── Node ─────────────────────────────────────────────────────────────────────
 
@@ -46,6 +31,7 @@ export class RequirementsParserNode {
   constructor(
     private readonly prisma: PrismaService,
     private readonly memory: MemoryService,
+    private readonly graphLlm: GraphLlmProvider,
   ) {}
 
   async execute(
@@ -58,13 +44,6 @@ export class RequirementsParserNode {
         where: { id: state.projectId },
         data: { status: 'PARSING_REQUIREMENTS' },
       });
-
-      const model = new ChatOpenAI({
-        model: 'gpt-4o-mini',
-        temperature: 0.2,
-      });
-
-      const structuredModel = model.withStructuredOutput(RequirementsSchema);
 
       const prompt = `You are a software architect analyzing a project brief to extract structured requirements.
 
@@ -92,14 +71,43 @@ Analyze this brief and produce a structured requirements document. Base the tech
         return { requirements, complexity: 'simple' };
       }
 
-      const result = await structuredModel.invoke(prompt);
+      const result = await this.graphLlm.generateJson<Partial<RequirementsDocument>>({
+        agentName: 'requirements_parser',
+        systemPrompt: SYSTEM_PROMPT,
+        userPrompt: prompt,
+        expectedShape: 'object',
+        maxTokens: 1500,
+      });
+
+      const parsed = result.value;
+      const features = Array.isArray(parsed.features) && parsed.features.length > 0
+        ? parsed.features.filter((feature): feature is string => typeof feature === 'string')
+        : ['Core application workflow'];
+      const techStack = parsed.techStack && typeof parsed.techStack === 'object'
+        ? parsed.techStack
+        : {
+            frontend: 'Next.js',
+            backend: 'NestJS',
+            database: 'PostgreSQL',
+            styling: 'Tailwind CSS',
+          };
+      const parsedComplexity = parsed.complexity === 'simple' || parsed.complexity === 'medium' || parsed.complexity === 'complex'
+        ? parsed.complexity
+        : 'medium';
 
       const requirements: RequirementsDocument = {
-        projectType: result.projectType,
-        features: result.features,
-        techStack: result.techStack as TechStack,
-        complexity: result.complexity,
-        estimatedFiles: result.estimatedFiles,
+        projectType: typeof parsed.projectType === 'string' ? parsed.projectType : 'Custom web application',
+        features,
+        techStack: {
+          frontend: typeof techStack.frontend === 'string' ? techStack.frontend : 'Next.js',
+          backend: typeof techStack.backend === 'string' ? techStack.backend : 'NestJS',
+          database: typeof techStack.database === 'string' ? techStack.database : 'PostgreSQL',
+          styling: typeof techStack.styling === 'string' ? techStack.styling : 'Tailwind CSS',
+        },
+        complexity: parsedComplexity,
+        estimatedFiles: typeof parsed.estimatedFiles === 'number' && parsed.estimatedFiles > 0
+          ? Math.ceil(parsed.estimatedFiles)
+          : features.length + 6,
       };
 
       this.logger.log(

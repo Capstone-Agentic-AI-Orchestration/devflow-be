@@ -2,15 +2,30 @@ import { z } from 'zod';
 
 export const envSchema = z.object({
   DATABASE_URL: z.string().url('DATABASE_URL must be a valid URL'),
-  ANTHROPIC_API_KEY: z.string().min(1, 'ANTHROPIC_API_KEY is required'),
-  OPENAI_API_KEY: z.string().min(1, 'OPENAI_API_KEY is required'),
-  GITHUB_APP_ID: z.string().min(1, 'GITHUB_APP_ID is required'),
-  GITHUB_PRIVATE_KEY: z
-    .string()
-    .min(1, 'GITHUB_PRIVATE_KEY is required (base64 encoded)'),
-  GITHUB_INSTALLATION_ID: z
-    .string()
-    .min(1, 'GITHUB_INSTALLATION_ID is required'),
+  SUPABASE_URL: z.string().url('SUPABASE_URL must be a valid URL'),
+  AGENT_PROVIDER: z.enum(['mock', 'llm']).optional().default('mock'),
+  LLM_PROVIDER: z.enum(['openrouter', 'openai', 'anthropic', 'opencode']).optional().default('openrouter'),
+  OPENROUTER_API_KEY: z.string().optional().default(''),
+  OPENROUTER_BASE_URL: z.string().url().optional().default('https://openrouter.ai/api/v1'),
+  OPENROUTER_MODEL: z.string().optional().default('deepseek/deepseek-v4-flash:free'),
+  OPENROUTER_FALLBACK_MODEL: z.string().optional().default(''),
+  OPENAI_BASE_URL: z.string().url().optional().default('https://api.openai.com/v1'),
+  OPENAI_MODEL: z.string().optional().default('gpt-4.1-mini'),
+  OPENAI_FALLBACK_MODEL: z.string().optional().default(''),
+  ANTHROPIC_BASE_URL: z.string().url().optional().default('https://api.anthropic.com/v1'),
+  ANTHROPIC_MODEL: z.string().optional().default('claude-3-5-haiku-20241022'),
+  ANTHROPIC_FALLBACK_MODEL: z.string().optional().default(''),
+  ANTHROPIC_VERSION: z.string().optional().default('2023-06-01'),
+  ANTHROPIC_API_KEY: z.string().optional().default(''),
+  OPENCODE_API_KEY: z.string().optional().default(''),
+  OPENCODE_BASE_URL: z.string().url().optional().default('https://opencode.ai/zen/go/v1'),
+  OPENCODE_MODEL: z.string().optional().default('deepseek-v4-flash'),
+  OPENCODE_FALLBACK_MODEL: z.string().optional().default(''),
+  OPENAI_API_KEY: z.string().optional().default(''),
+  GITHUB_APP_ID: z.string().optional().default(''),
+  GITHUB_PRIVATE_KEY: z.string().optional().default(''),
+  GITHUB_INSTALLATION_ID: z.string().optional().default(''),
+  GITHUB_ORG: z.string().optional().default(''),
   PORT: z
     .string()
     .optional()

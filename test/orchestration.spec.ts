@@ -1,7 +1,8 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { Test } from '@nestjs/testing';
+import 'reflect-metadata';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { OrchestrationService } from '../src/orchestration/orchestration.service';
 import { PrismaService } from '../src/prisma/prisma.service';
+import { MemoryService } from '../src/memory/memory.service';
 import { RequirementsParserNode } from '../src/orchestration/nodes/requirements-parser.node';
 import { ContractNegotiatorNode } from '../src/orchestration/nodes/contract-negotiator.node';
 import { FrontendAgentNode } from '../src/orchestration/nodes/frontend-agent.node';
@@ -10,7 +11,14 @@ import { DatabaseAgentNode } from '../src/orchestration/nodes/database-agent.nod
 import { ArchitectureAgentNode } from '../src/orchestration/nodes/architecture-agent.node';
 import { ValidatorNode } from '../src/orchestration/nodes/validator.node';
 import { GithubCommitNode } from '../src/orchestration/nodes/github-commit.node';
+import { AgentProviderRegistry } from '../src/orchestration/providers/agent-provider.registry';
+import { ArtifactContractValidator } from '../src/orchestration/providers/artifact-contract.validator';
+import { LlmAgentProvider } from '../src/orchestration/providers/llm-agent.provider';
+import { MockAgentProvider } from '../src/orchestration/providers/mock-agent.provider';
+import { NotificationsService } from '../src/notifications/notifications.service';
+import { GithubService } from '../src/github/github.service';
 import type { RequirementsDocument, ProjectContract, GeneratedArtifact } from '../src/orchestration/graph/devflow.state';
+import { ArtifactValidationStatus, ArtifactReviewStatus, OrchestrationRunStatus, OrchestrationRunTrigger, ProjectStatus, ProjectTaskStatus, WorkOrderAgentType, WorkOrderExecutionStatus, WorkOrderPriority, WorkOrderStatus } from '@prisma/client';
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -73,12 +81,72 @@ function makePrismaMock() {
     },
     artifact: {
       createMany: vi.fn().mockResolvedValue({ count: 0 }),
+      create: vi.fn(),
+    },
+    workOrder: {
+      findFirst: vi.fn(),
+      findMany: vi.fn().mockResolvedValue([]),
+      count: vi.fn().mockResolvedValue(1),
+      update: vi.fn().mockResolvedValue({}),
+    },
+    orchestrationRun: {
+      create: vi.fn().mockResolvedValue({ id: 'orchestration-run-1' }),
+      findUnique: vi.fn().mockResolvedValue(null),
+      update: vi.fn().mockResolvedValue({}),
+      updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+    },
+    workOrderExecution: {
+      create: vi.fn().mockResolvedValue({ id: 'execution-1' }),
+      update: vi.fn().mockResolvedValue({ id: 'execution-1' }),
+    },
+    runBudget: {
+      create: vi.fn().mockResolvedValue({}),
+    },
+    eventLog: {
+      create: vi.fn().mockResolvedValue({}),
+    },
+    projectTimelineEvent: {
+      create: vi.fn().mockResolvedValue({}),
+    },
+    projectTask: {
+      update: vi.fn().mockResolvedValue({}),
+    },
+    projectTaskActivity: {
+      create: vi.fn().mockResolvedValue({}),
     },
   };
 }
 
 function makeNodeMock<T>(returnValue: T) {
   return { execute: vi.fn().mockResolvedValue(returnValue) };
+}
+
+function makeMemoryMock() {
+  return {
+    writeMistake: vi.fn().mockResolvedValue(undefined),
+    writeSkill: vi.fn().mockResolvedValue(undefined),
+    writePattern: vi.fn().mockResolvedValue(undefined),
+  };
+}
+
+function makeNotificationsMock() {
+  return {
+    notify: vi.fn().mockResolvedValue(undefined),
+    projectManagers: vi.fn().mockResolvedValue(['pm-2']),
+  };
+}
+
+function makeGithubMock() {
+  return {
+    getDeliveryStatus: vi.fn().mockReturnValue({
+      configured: false,
+      available: false,
+      owner: null,
+      ownerSource: null,
+      missingRequirements: ['GITHUB_APP_ID', 'GITHUB_PRIVATE_KEY', 'GITHUB_INSTALLATION_ID', 'GITHUB_ORG'],
+      reason: 'GitHub delivery requires GITHUB_APP_ID, GITHUB_PRIVATE_KEY, GITHUB_INSTALLATION_ID, GITHUB_ORG.',
+    }),
+  };
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
@@ -94,9 +162,47 @@ describe('OrchestrationService', () => {
   let architectureAgent: { execute: ReturnType<typeof vi.fn> };
   let validator: { execute: ReturnType<typeof vi.fn> };
   let githubCommit: { execute: ReturnType<typeof vi.fn> };
+  let memory: ReturnType<typeof makeMemoryMock>;
+  let mockAgentProvider: MockAgentProvider;
+  let agentProviderRegistry: AgentProviderRegistry;
+  let notifications: ReturnType<typeof makeNotificationsMock>;
+  let github: ReturnType<typeof makeGithubMock>;
+  let originalAgentProvider: string | undefined;
+  let originalLlmProvider: string | undefined;
+  let originalOpenRouterApiKey: string | undefined;
+  let originalOpenRouterModel: string | undefined;
+  let originalOpenRouterBaseUrl: string | undefined;
+  let originalOpenRouterFallbackModel: string | undefined;
+  let originalAnthropicApiKey: string | undefined;
+  let originalOpenAiApiKey: string | undefined;
 
-  beforeEach(async () => {
+  beforeEach(() => {
+    originalAgentProvider = process.env.AGENT_PROVIDER;
+    originalLlmProvider = process.env.LLM_PROVIDER;
+    originalOpenRouterApiKey = process.env.OPENROUTER_API_KEY;
+    originalOpenRouterModel = process.env.OPENROUTER_MODEL;
+    originalOpenRouterBaseUrl = process.env.OPENROUTER_BASE_URL;
+    originalOpenRouterFallbackModel = process.env.OPENROUTER_FALLBACK_MODEL;
+    originalAnthropicApiKey = process.env.ANTHROPIC_API_KEY;
+    originalOpenAiApiKey = process.env.OPENAI_API_KEY;
+    process.env.AGENT_PROVIDER = 'mock';
+    process.env.LLM_PROVIDER = 'openrouter';
+    process.env.OPENROUTER_MODEL = 'deepseek/deepseek-v4-flash:free';
+    process.env.OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
+    delete process.env.OPENROUTER_API_KEY;
+    delete process.env.OPENROUTER_FALLBACK_MODEL;
+    delete process.env.ANTHROPIC_API_KEY;
+    delete process.env.OPENAI_API_KEY;
+
     prisma = makePrismaMock();
+    memory = makeMemoryMock();
+    mockAgentProvider = new MockAgentProvider();
+    agentProviderRegistry = new AgentProviderRegistry(
+      mockAgentProvider,
+      new LlmAgentProvider(),
+    );
+    notifications = makeNotificationsMock();
+    github = makeGithubMock();
 
     requirementsParser = makeNodeMock({ requirements: MOCK_REQUIREMENTS });
     contractNegotiator = makeNodeMock({ contract: MOCK_CONTRACT });
@@ -134,30 +240,76 @@ describe('OrchestrationService', () => {
     validator = makeNodeMock({});
     githubCommit = makeNodeMock({ repoUrl: 'https://github.com/test/test-shop' });
 
-    const module = await Test.createTestingModule({
-      providers: [
-        OrchestrationService,
-        { provide: PrismaService, useValue: prisma },
-        { provide: RequirementsParserNode, useValue: requirementsParser },
-        { provide: ContractNegotiatorNode, useValue: contractNegotiator },
-        { provide: FrontendAgentNode, useValue: frontendAgent },
-        { provide: BackendAgentNode, useValue: backendAgent },
-        { provide: DatabaseAgentNode, useValue: databaseAgent },
-        { provide: ArchitectureAgentNode, useValue: architectureAgent },
-        { provide: ValidatorNode, useValue: validator },
-        { provide: GithubCommitNode, useValue: githubCommit },
-      ],
-    }).compile();
-
-    service = module.get(OrchestrationService);
+    service = new OrchestrationService(
+      prisma as unknown as PrismaService,
+      requirementsParser as unknown as RequirementsParserNode,
+      contractNegotiator as unknown as ContractNegotiatorNode,
+      frontendAgent as unknown as FrontendAgentNode,
+      backendAgent as unknown as BackendAgentNode,
+      databaseAgent as unknown as DatabaseAgentNode,
+      architectureAgent as unknown as ArchitectureAgentNode,
+      validator as unknown as ValidatorNode,
+      githubCommit as unknown as GithubCommitNode,
+      memory as unknown as MemoryService,
+      new ArtifactContractValidator(),
+      agentProviderRegistry,
+      notifications as unknown as NotificationsService,
+      github as unknown as GithubService,
+      null,
+    );
 
     // Mock checkpointer so onModuleInit doesn't need a real DB
     vi.spyOn(service as unknown as { onModuleInit: () => Promise<void> }, 'onModuleInit').mockResolvedValue(undefined);
   });
 
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    if (originalAgentProvider === undefined) {
+      delete process.env.AGENT_PROVIDER;
+    } else {
+      process.env.AGENT_PROVIDER = originalAgentProvider;
+    }
+    if (originalLlmProvider === undefined) {
+      delete process.env.LLM_PROVIDER;
+    } else {
+      process.env.LLM_PROVIDER = originalLlmProvider;
+    }
+    if (originalOpenRouterApiKey === undefined) {
+      delete process.env.OPENROUTER_API_KEY;
+    } else {
+      process.env.OPENROUTER_API_KEY = originalOpenRouterApiKey;
+    }
+    if (originalOpenRouterModel === undefined) {
+      delete process.env.OPENROUTER_MODEL;
+    } else {
+      process.env.OPENROUTER_MODEL = originalOpenRouterModel;
+    }
+    if (originalOpenRouterBaseUrl === undefined) {
+      delete process.env.OPENROUTER_BASE_URL;
+    } else {
+      process.env.OPENROUTER_BASE_URL = originalOpenRouterBaseUrl;
+    }
+    if (originalOpenRouterFallbackModel === undefined) {
+      delete process.env.OPENROUTER_FALLBACK_MODEL;
+    } else {
+      process.env.OPENROUTER_FALLBACK_MODEL = originalOpenRouterFallbackModel;
+    }
+    if (originalAnthropicApiKey === undefined) {
+      delete process.env.ANTHROPIC_API_KEY;
+    } else {
+      process.env.ANTHROPIC_API_KEY = originalAnthropicApiKey;
+    }
+    if (originalOpenAiApiKey === undefined) {
+      delete process.env.OPENAI_API_KEY;
+    } else {
+      process.env.OPENAI_API_KEY = originalOpenAiApiKey;
+    }
+    vi.restoreAllMocks();
+  });
+
   it('startRun updates project runId and returns a non-empty runId', async () => {
     // Stub graph invoke so it doesn't actually run
-    (service as unknown as { graph: { invoke: ReturnType<typeof vi.fn> } }).graph = {
+    (service as unknown as { mockWorkOrderGraph: { invoke: ReturnType<typeof vi.fn> } }).mockWorkOrderGraph = {
       invoke: vi.fn().mockResolvedValue({}),
     };
 
@@ -167,6 +319,13 @@ describe('OrchestrationService', () => {
       where: { id: 'test-project-id' },
       data: { runId },
     });
+    expect(prisma.orchestrationRun.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        projectId: 'test-project-id',
+        runId,
+        status: 'RUNNING',
+      }),
+    });
   });
 
   it('resumeGate1 with approved=false records REJECTED and does not resume graph', async () => {
@@ -174,6 +333,9 @@ describe('OrchestrationService', () => {
     (service as unknown as { graph: { updateState: ReturnType<typeof vi.fn>; invoke: ReturnType<typeof vi.fn> } }).graph = {
       updateState: vi.fn(),
       invoke: vi.fn(),
+    };
+    (service as unknown as { checkpointer: { get: ReturnType<typeof vi.fn> } }).checkpointer = {
+      get: vi.fn().mockResolvedValue(null),
     };
 
     await service.resumeGate1('test-project-id', false, 'needs more work');
@@ -190,6 +352,9 @@ describe('OrchestrationService', () => {
     const updateState = vi.fn().mockResolvedValue({});
     const invoke = vi.fn().mockResolvedValue({});
     (service as unknown as { graph: unknown }).graph = { updateState, invoke };
+    (service as unknown as { checkpointer: { get: ReturnType<typeof vi.fn> } }).checkpointer = {
+      get: vi.fn().mockResolvedValue(null),
+    };
 
     await service.resumeGate1('test-project-id', true);
 
@@ -208,6 +373,9 @@ describe('OrchestrationService', () => {
     const updateState = vi.fn().mockResolvedValue({});
     const invoke = vi.fn().mockResolvedValue({});
     (service as unknown as { graph: unknown }).graph = { updateState, invoke };
+    (service as unknown as { checkpointer: { get: ReturnType<typeof vi.fn> } }).checkpointer = {
+      get: vi.fn().mockResolvedValue(null),
+    };
 
     await service.resumeGate2('test-project-id', true, 'looks good');
 
@@ -241,5 +409,842 @@ describe('OrchestrationService', () => {
     const status = await service.getStatus('test-project-id');
     expect(status.error).toBeNull();
     expect(status.retryCount).toBe(1);
+  });
+
+  it('getProviderStatus reports mock as available default provider', () => {
+    const status = service.getProviderStatus();
+
+    expect(status).toEqual(expect.objectContaining({
+      requestedMode: 'mock',
+      activeMode: 'mock',
+      available: true,
+      fallbackMode: null,
+      missingRequirements: [],
+      reason: null,
+    }));
+    expect(status.providers).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        mode: 'mock',
+        active: true,
+        available: true,
+        implemented: true,
+      }),
+      expect.objectContaining({
+        mode: 'llm',
+        active: false,
+        available: false,
+        implemented: true,
+        provider: 'openrouter',
+        model: 'deepseek/deepseek-v4-flash:free',
+      }),
+    ]));
+    expect(status.githubDelivery).toEqual(expect.objectContaining({
+      configured: false,
+      available: false,
+      missingRequirements: expect.arrayContaining(['GITHUB_ORG']),
+    }));
+  });
+
+  it('getProviderStatus reports requested OpenRouter mode unavailable without API key', () => {
+    process.env.AGENT_PROVIDER = 'llm';
+    delete process.env.OPENROUTER_API_KEY;
+
+    const status = service.getProviderStatus();
+
+    expect(status).toEqual(expect.objectContaining({
+      requestedMode: 'llm',
+      activeMode: 'llm',
+      available: false,
+      fallbackMode: 'mock',
+      missingRequirements: ['OPENROUTER_API_KEY'],
+      provider: 'openrouter',
+      model: 'deepseek/deepseek-v4-flash:free',
+    }));
+    expect(status.reason).toContain('OpenRouter provider requires');
+  });
+
+  it('getProviderStatus reports OpenRouter as available when a key is configured', () => {
+    process.env.AGENT_PROVIDER = 'llm';
+    process.env.OPENROUTER_API_KEY = 'test-openrouter-key';
+    process.env.OPENROUTER_FALLBACK_MODEL = 'deepseek/deepseek-v4-flash';
+
+    const status = service.getProviderStatus();
+
+    expect(status).toEqual(expect.objectContaining({
+      requestedMode: 'llm',
+      activeMode: 'llm',
+      available: true,
+      fallbackMode: null,
+      missingRequirements: [],
+      reason: null,
+      provider: 'openrouter',
+      model: 'deepseek/deepseek-v4-flash:free',
+      fallbackModel: 'deepseek/deepseek-v4-flash',
+    }));
+  });
+
+  it('getProviderStatus reports OpenCode as available when a key is configured', () => {
+    process.env.AGENT_PROVIDER = 'llm';
+    process.env.LLM_PROVIDER = 'opencode';
+    process.env.OPENCODE_API_KEY = 'test-opencode-key';
+    process.env.OPENCODE_FALLBACK_MODEL = 'deepseek-v4-pro';
+
+    const status = service.getProviderStatus();
+
+    expect(status).toEqual(expect.objectContaining({
+      requestedMode: 'llm',
+      activeMode: 'llm',
+      available: true,
+      fallbackMode: null,
+      missingRequirements: [],
+      reason: null,
+      provider: 'opencode',
+      model: 'deepseek-v4-flash',
+      fallbackModel: 'deepseek-v4-pro',
+    }));
+    expect(status.providers).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        mode: 'llm',
+        displayName: 'OpenCode LLM Provider',
+        available: true,
+      }),
+    ]));
+  });
+
+  it('startRun rejects LLM orchestration when GitHub delivery is not configured', async () => {
+    process.env.AGENT_PROVIDER = 'llm';
+    process.env.OPENROUTER_API_KEY = 'test-openrouter-key';
+
+    await expect(
+      service.startRun('test-project-id', 'Build a shop', 'nextjs-nestjs', 'TestCo'),
+    ).rejects.toThrow('GitHub delivery requires');
+    expect(prisma.project.update).not.toHaveBeenCalled();
+  });
+
+  it('executeWorkOrder records execution logs, creates an artifact, and links it back to work order and task', async () => {
+    prisma.workOrder.findFirst.mockResolvedValue({
+      id: 'work-order-1',
+      projectId: 'test-project-id',
+      taskId: 'task-1',
+      artifactId: null,
+      title: 'Build frontend shell',
+      instructions: 'Create the first dashboard shell.',
+      agentType: WorkOrderAgentType.FRONTEND,
+      priority: WorkOrderPriority.HIGH,
+      status: WorkOrderStatus.READY,
+      executionAttempt: 0,
+      dispatchedAt: null,
+      project: {
+        id: 'test-project-id',
+        companyName: 'TestCo',
+        brief: 'Build a shop',
+        stackKey: 'nextjs-nestjs',
+      },
+      task: {
+        id: 'task-1',
+        title: 'Frontend dashboard',
+        description: 'Client dashboard task.',
+        assignedToId: 'dev-1',
+        status: ProjectTaskStatus.TODO,
+      },
+      artifact: null,
+    });
+    prisma.artifact.create.mockResolvedValue({
+      id: 'artifact-generated-1',
+      projectId: 'test-project-id',
+      agentType: 'frontend',
+      filePath: 'work-orders/work-order-1/frontend-output.md',
+      displayName: 'Build frontend shell output',
+      reviewStatus: ArtifactReviewStatus.PENDING,
+    });
+
+    const result = await service.executeWorkOrder('test-project-id', 'work-order-1', 'pm-1');
+
+    expect(result).toEqual({
+      executionRunId: expect.any(String),
+      artifactId: 'artifact-generated-1',
+    });
+    expect(prisma.eventLog.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        projectId: 'test-project-id',
+        nodeName: 'work_order_frontend',
+        eventType: 'STARTED',
+        costMeta: expect.objectContaining({ workOrderId: 'work-order-1' }),
+      }),
+    });
+    expect(prisma.workOrderExecution.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        projectId: 'test-project-id',
+        orchestrationRunId: 'orchestration-run-1',
+        workOrderId: 'work-order-1',
+        executionRunId: expect.any(String),
+        attempt: 1,
+        agentType: WorkOrderAgentType.FRONTEND,
+        status: 'RUNNING',
+      }),
+    });
+    expect(prisma.artifact.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        projectId: 'test-project-id',
+        agentType: 'frontend',
+        filePath: 'work-orders/work-order-1/frontend-output.tsx',
+        clientVisible: false,
+        validationStatus: ArtifactValidationStatus.PASSED,
+        validationSummary: 'FRONTEND artifact contract mock-work-order-v1 passed',
+      }),
+    });
+    expect(prisma.workOrderExecution.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        metadata: expect.objectContaining({
+          providerMode: 'mock',
+          contract: expect.objectContaining({
+            version: 'mock-work-order-v1',
+            agentSlug: 'frontend',
+            nodeName: 'work_order_frontend',
+          }),
+        }),
+      }),
+    });
+    expect(prisma.workOrder.update).toHaveBeenCalledWith({
+      where: { id: 'work-order-1' },
+      data: expect.objectContaining({
+        status: WorkOrderStatus.COMPLETED,
+        artifactId: 'artifact-generated-1',
+        executionCompletedAt: expect.any(Date),
+      }),
+    });
+    expect(prisma.projectTask.update).toHaveBeenCalledWith({
+      where: { id: 'task-1' },
+      data: {
+        status: ProjectTaskStatus.IN_REVIEW,
+        artifactId: 'artifact-generated-1',
+      },
+    });
+    expect(prisma.eventLog.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        projectId: 'test-project-id',
+        nodeName: 'work_order_frontend',
+        eventType: 'COMPLETED',
+        costMeta: expect.objectContaining({
+          workOrderId: 'work-order-1',
+          artifactId: 'artifact-generated-1',
+        }),
+      }),
+    });
+  });
+
+  it('executeWorkOrder attaches graph-triggered executions to the parent orchestration run', async () => {
+    prisma.orchestrationRun.findUnique.mockResolvedValue({ id: 'parent-run-db-id' });
+    prisma.workOrder.findFirst.mockResolvedValue({
+      id: 'work-order-1',
+      projectId: 'test-project-id',
+      taskId: 'task-1',
+      artifactId: null,
+      title: 'Build backend service',
+      instructions: 'Create a NestJS service handoff.',
+      agentType: WorkOrderAgentType.BACKEND,
+      priority: WorkOrderPriority.NORMAL,
+      status: WorkOrderStatus.READY,
+      executionAttempt: 0,
+      executionRunId: null,
+      executionStartedAt: null,
+      dispatchedAt: null,
+      project: {
+        id: 'test-project-id',
+        companyName: 'TestCo',
+        brief: 'Build a shop',
+        stackKey: 'nextjs-nestjs',
+      },
+      task: {
+        id: 'task-1',
+        title: 'Backend service',
+        description: 'API task.',
+        assignedToId: 'dev-1',
+        status: ProjectTaskStatus.TODO,
+      },
+      artifact: null,
+    });
+    prisma.artifact.create.mockResolvedValue({
+      id: 'artifact-generated-1',
+      projectId: 'test-project-id',
+      agentType: 'backend',
+      filePath: 'work-orders/work-order-1/backend-output.ts',
+      displayName: 'Build backend service output',
+      reviewStatus: ArtifactReviewStatus.PENDING,
+    });
+
+    await service.executeWorkOrder('test-project-id', 'work-order-1', 'pm-1', {
+      parentRunId: 'parent-run-1',
+      trigger: OrchestrationRunTrigger.START,
+    });
+
+    expect(prisma.orchestrationRun.findUnique).toHaveBeenCalledWith({
+      where: { runId: 'parent-run-1' },
+      select: { id: true },
+    });
+    expect(prisma.orchestrationRun.create).not.toHaveBeenCalled();
+    expect(prisma.workOrderExecution.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        orchestrationRunId: 'parent-run-db-id',
+        workOrderId: 'work-order-1',
+        agentType: WorkOrderAgentType.BACKEND,
+        metadata: expect.objectContaining({
+          trigger: 'START',
+          providerMode: 'mock',
+          contract: expect.objectContaining({
+            version: 'mock-work-order-v1',
+            agentSlug: 'backend',
+            nodeName: 'work_order_backend',
+          }),
+        }),
+      }),
+    });
+  });
+
+  it('executeWorkOrder rejects non-executable completed work orders before creating an execution', async () => {
+    prisma.workOrder.findFirst.mockResolvedValue({
+      id: 'work-order-1',
+      projectId: 'test-project-id',
+      taskId: 'task-1',
+      artifactId: 'artifact-1',
+      title: 'Already complete',
+      instructions: 'This should not run again.',
+      agentType: WorkOrderAgentType.FRONTEND,
+      priority: WorkOrderPriority.NORMAL,
+      status: WorkOrderStatus.COMPLETED,
+      executionAttempt: 1,
+      executionRunId: 'previous-run',
+      executionStartedAt: new Date('2026-05-28T00:00:00.000Z'),
+      dispatchedAt: new Date('2026-05-28T00:00:00.000Z'),
+      project: {
+        id: 'test-project-id',
+        companyName: 'TestCo',
+        brief: 'Build a shop',
+        stackKey: 'nextjs-nestjs',
+      },
+      task: null,
+      artifact: null,
+    });
+
+    await expect(
+      service.executeWorkOrder('test-project-id', 'work-order-1', 'pm-1'),
+    ).rejects.toThrow('Work order work-order-1 must be READY before agent execution');
+
+    expect(prisma.orchestrationRun.create).not.toHaveBeenCalled();
+    expect(prisma.workOrderExecution.create).not.toHaveBeenCalled();
+    expect(prisma.artifact.create).not.toHaveBeenCalled();
+  });
+
+  it('executeWorkOrder fails predictably when LLM mode is requested without provider keys', async () => {
+    process.env.AGENT_PROVIDER = 'llm';
+    delete process.env.OPENROUTER_API_KEY;
+    prisma.workOrder.findFirst.mockResolvedValue({
+      id: 'work-order-1',
+      projectId: 'test-project-id',
+      taskId: 'task-1',
+      artifactId: null,
+      title: 'Build frontend shell',
+      instructions: 'Create the first dashboard shell.',
+      agentType: WorkOrderAgentType.FRONTEND,
+      priority: WorkOrderPriority.HIGH,
+      status: WorkOrderStatus.READY,
+      executionAttempt: 0,
+      executionRunId: null,
+      executionStartedAt: null,
+      dispatchedAt: null,
+      project: {
+        id: 'test-project-id',
+        companyName: 'TestCo',
+        brief: 'Build a shop',
+        stackKey: 'nextjs-nestjs',
+      },
+      task: {
+        id: 'task-1',
+        title: 'Frontend dashboard',
+        description: 'Client dashboard task.',
+        assignedToId: 'dev-1',
+        status: ProjectTaskStatus.TODO,
+      },
+      artifact: null,
+    });
+
+    await expect(
+      service.executeWorkOrder('test-project-id', 'work-order-1', 'pm-1'),
+    ).rejects.toThrow('Agent provider llm is unavailable: OpenRouter provider requires OPENROUTER_API_KEY');
+
+    expect(prisma.orchestrationRun.create).not.toHaveBeenCalled();
+    expect(prisma.workOrderExecution.create).not.toHaveBeenCalled();
+    expect(prisma.workOrder.update).not.toHaveBeenCalled();
+    expect(prisma.artifact.create).not.toHaveBeenCalled();
+  });
+
+  it('executeWorkOrder can generate a validated artifact through OpenRouter JSON output', async () => {
+    process.env.AGENT_PROVIDER = 'llm';
+    process.env.OPENROUTER_API_KEY = 'test-openrouter-key';
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                filePath: 'work-orders/work-order-1/frontend-output.tsx',
+                displayName: 'OpenRouter frontend output',
+                language: 'typescript',
+                content: [
+                  "import React from 'react';",
+                  'export function OpenRouterFrontendOutput() {',
+                  '  return <section><div>Recovered frontend work order output</div></section>;',
+                  '}',
+                  'export default OpenRouterFrontendOutput;',
+                ].join('\n'),
+                metadata: { source: 'openrouter-test' },
+              }),
+            },
+          },
+        ],
+      }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    prisma.workOrder.findFirst.mockResolvedValue({
+      id: 'work-order-1',
+      projectId: 'test-project-id',
+      taskId: 'task-1',
+      artifactId: null,
+      title: 'Build frontend shell',
+      instructions: 'Create the first dashboard shell.',
+      agentType: WorkOrderAgentType.FRONTEND,
+      priority: WorkOrderPriority.HIGH,
+      status: WorkOrderStatus.READY,
+      executionAttempt: 0,
+      executionRunId: null,
+      executionStartedAt: null,
+      dispatchedAt: null,
+      project: {
+        id: 'test-project-id',
+        companyName: 'TestCo',
+        brief: 'Build a shop',
+        stackKey: 'nextjs-nestjs',
+      },
+      task: {
+        id: 'task-1',
+        title: 'Frontend dashboard',
+        description: 'Client dashboard task.',
+        assignedToId: 'dev-1',
+        status: ProjectTaskStatus.TODO,
+      },
+      artifact: null,
+    });
+    prisma.artifact.create.mockResolvedValue({
+      id: 'artifact-openrouter-1',
+      projectId: 'test-project-id',
+      agentType: 'frontend',
+      filePath: 'work-orders/work-order-1/frontend-output.tsx',
+      displayName: 'OpenRouter frontend output',
+      reviewStatus: ArtifactReviewStatus.PENDING,
+    });
+
+    const result = await service.executeWorkOrder('test-project-id', 'work-order-1', 'pm-1');
+
+    expect(result.artifactId).toBe('artifact-openrouter-1');
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://openrouter.ai/api/v1/chat/completions',
+      expect.objectContaining({
+        method: 'POST',
+        headers: expect.objectContaining({
+          Authorization: 'Bearer test-openrouter-key',
+          'Content-Type': 'application/json',
+        }),
+      }),
+    );
+    const request = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(request).toEqual(expect.objectContaining({
+      model: 'deepseek/deepseek-v4-flash:free',
+      response_format: { type: 'json_object' },
+    }));
+    expect(prisma.artifact.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        filePath: 'work-orders/work-order-1/frontend-output.tsx',
+        displayName: 'OpenRouter frontend output',
+        validationStatus: ArtifactValidationStatus.PASSED,
+      }),
+    });
+    expect(prisma.workOrderExecution.update).toHaveBeenCalledWith({
+      where: { executionRunId: expect.any(String) },
+      data: expect.objectContaining({
+        status: WorkOrderExecutionStatus.SUCCEEDED,
+        metadata: expect.objectContaining({
+          providerMode: 'llm',
+          output: expect.objectContaining({
+            metadata: expect.objectContaining({
+              provider: 'openrouter',
+              model: 'deepseek/deepseek-v4-flash:free',
+            }),
+          }),
+        }),
+      }),
+    });
+  });
+
+  it('normalizes wrapped OpenRouter artifact JSON output', async () => {
+    process.env.OPENROUTER_API_KEY = 'test-openrouter-key';
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                artifact: {
+                  file_path: 'work-orders/work-order-1/frontend-output.tsx',
+                  title: 'Wrapped OpenRouter frontend output',
+                  code: [
+                    "import React from 'react';",
+                    'export function WrappedFrontendOutput() {',
+                    '  return <section><div>Wrapped frontend work order output</div></section>;',
+                    '}',
+                  ].join('\n'),
+                  metadata: { source: 'wrapped-openrouter-test' },
+                },
+              }),
+            },
+          },
+        ],
+      }),
+    }));
+
+    const provider = new LlmAgentProvider();
+    const output = await provider.generateWorkOrderOutput({
+      project: {
+        id: 'test-project-id',
+        companyName: 'TestCo',
+        brief: 'Build a shop',
+        stackKey: 'nextjs-nestjs',
+      },
+      workOrder: {
+        id: 'work-order-1',
+        title: 'Build frontend shell',
+        instructions: 'Create the first dashboard shell.',
+        agentType: WorkOrderAgentType.FRONTEND,
+        priority: WorkOrderPriority.HIGH,
+      },
+      task: {
+        id: 'task-1',
+        title: 'Frontend dashboard',
+        description: 'Client dashboard task.',
+        assignedToId: 'dev-1',
+        status: ProjectTaskStatus.TODO,
+      },
+      sourceArtifact: null,
+      executionRunId: 'execution-1',
+    });
+
+    expect(output).toEqual(expect.objectContaining({
+      filePath: 'work-orders/work-order-1/frontend-output.tsx',
+      displayName: 'Wrapped OpenRouter frontend output',
+      language: 'typescript',
+      content: expect.stringContaining('export function WrappedFrontendOutput'),
+      metadata: expect.objectContaining({
+        source: 'wrapped-openrouter-test',
+        provider: 'openrouter',
+        model: 'deepseek/deepseek-v4-flash:free',
+      }),
+    }));
+  });
+
+  it('executeWorkOrder fails cleanly when OpenRouter returns invalid JSON', async () => {
+    process.env.AGENT_PROVIDER = 'llm';
+    process.env.OPENROUTER_API_KEY = 'test-openrouter-key';
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({
+        choices: [{ message: { content: 'not json' } }],
+      }),
+    }));
+    prisma.workOrder.findFirst.mockResolvedValue({
+      id: 'work-order-1',
+      projectId: 'test-project-id',
+      taskId: 'task-1',
+      artifactId: null,
+      title: 'Build frontend shell',
+      instructions: 'Create the first dashboard shell.',
+      agentType: WorkOrderAgentType.FRONTEND,
+      priority: WorkOrderPriority.HIGH,
+      status: WorkOrderStatus.READY,
+      executionAttempt: 0,
+      executionRunId: null,
+      executionStartedAt: null,
+      dispatchedAt: null,
+      project: {
+        id: 'test-project-id',
+        companyName: 'TestCo',
+        brief: 'Build a shop',
+        stackKey: 'nextjs-nestjs',
+      },
+      task: {
+        id: 'task-1',
+        title: 'Frontend dashboard',
+        description: 'Client dashboard task.',
+        assignedToId: 'dev-1',
+        status: ProjectTaskStatus.TODO,
+      },
+      artifact: null,
+    });
+
+    await expect(
+      service.executeWorkOrder('test-project-id', 'work-order-1', 'pm-1'),
+    ).rejects.toThrow('OpenRouter deepseek/deepseek-v4-flash:free returned invalid JSON');
+
+    expect(prisma.artifact.create).not.toHaveBeenCalled();
+    expect(prisma.workOrder.update).toHaveBeenCalledWith({
+      where: { id: 'work-order-1' },
+      data: expect.objectContaining({
+        status: WorkOrderStatus.FAILED,
+        executionError: expect.stringContaining('OpenRouter deepseek/deepseek-v4-flash:free returned invalid JSON'),
+      }),
+    });
+  });
+
+  it('recoverStaleProject creates a durable supervisor recovery run and executes ready work orders', async () => {
+    prisma.workOrder.findMany.mockResolvedValue([
+      { id: 'work-order-1', instructions: 'Recover this frontend handoff.' },
+    ]);
+    prisma.orchestrationRun.findUnique.mockResolvedValue({ id: 'orchestration-run-1' });
+    prisma.workOrder.findFirst.mockResolvedValue({
+      id: 'work-order-1',
+      projectId: 'test-project-id',
+      taskId: 'task-1',
+      artifactId: null,
+      title: 'Build frontend shell',
+      instructions: 'Recover this frontend handoff.',
+      agentType: WorkOrderAgentType.FRONTEND,
+      priority: WorkOrderPriority.HIGH,
+      status: WorkOrderStatus.READY,
+      executionAttempt: 1,
+      executionRunId: null,
+      executionStartedAt: null,
+      dispatchedAt: null,
+      project: {
+        id: 'test-project-id',
+        companyName: 'TestCo',
+        brief: 'Build a shop',
+        stackKey: 'nextjs-nestjs',
+      },
+      task: {
+        id: 'task-1',
+        title: 'Frontend dashboard',
+        description: 'Client dashboard task.',
+        assignedToId: 'dev-1',
+        status: ProjectTaskStatus.TODO,
+      },
+      artifact: null,
+    });
+    prisma.artifact.create.mockResolvedValue({
+      id: 'artifact-generated-1',
+      projectId: 'test-project-id',
+      agentType: 'frontend',
+      filePath: 'work-orders/work-order-1/frontend-output.tsx',
+      displayName: 'Build frontend shell output',
+      reviewStatus: ArtifactReviewStatus.PENDING,
+    });
+
+    const result = await service.recoverStaleProject('test-project-id', {
+      reason: 'Supervisor detected stale run and queued retry 2/3',
+      retryAttempt: 2,
+      maxRetries: 3,
+    });
+
+    expect(result).toEqual({
+      runId: expect.any(String),
+      readyWorkOrders: 1,
+      completedWorkOrders: 1,
+      failedWorkOrders: 0,
+      status: OrchestrationRunStatus.SUCCEEDED,
+      error: null,
+    });
+    expect(prisma.orchestrationRun.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        projectId: 'test-project-id',
+        runId: result.runId,
+        providerMode: 'mock',
+        trigger: OrchestrationRunTrigger.RERUN_READY_WORK_ORDERS,
+        status: OrchestrationRunStatus.RUNNING,
+        currentNode: 'supervisor_recovery',
+        readyWorkOrders: 1,
+      }),
+    });
+    expect(prisma.project.update).toHaveBeenCalledWith({
+      where: { id: 'test-project-id' },
+      data: { runId: result.runId, status: ProjectStatus.GENERATING_CODE },
+    });
+    expect(prisma.workOrderExecution.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        orchestrationRunId: 'orchestration-run-1',
+        workOrderId: 'work-order-1',
+        attempt: 2,
+        metadata: expect.objectContaining({
+          trigger: OrchestrationRunTrigger.RERUN_READY_WORK_ORDERS,
+          providerMode: 'mock',
+        }),
+      }),
+    });
+    expect(prisma.orchestrationRun.updateMany).toHaveBeenCalledWith({
+      where: { projectId: 'test-project-id', runId: result.runId },
+      data: expect.objectContaining({
+        status: OrchestrationRunStatus.SUCCEEDED,
+        currentNode: 'supervisor_recovery',
+        error: null,
+        completedWorkOrders: 1,
+        failedWorkOrders: 0,
+        completedArtifacts: 1,
+        completedAt: expect.any(Date),
+      }),
+    });
+    expect(notifications.notify).toHaveBeenCalledWith(expect.objectContaining({
+      projectId: 'test-project-id',
+      title: 'Supervisor recovery completed',
+      metadata: expect.objectContaining({
+        runId: result.runId,
+        retryAttempt: 2,
+        maxRetries: 3,
+      }),
+    }));
+  });
+
+  it('recoverStaleProject records a failed recovery run when the requested provider is unavailable', async () => {
+    process.env.AGENT_PROVIDER = 'llm';
+    delete process.env.OPENROUTER_API_KEY;
+    prisma.workOrder.findMany.mockResolvedValue([
+      { id: 'work-order-1', instructions: 'Recover this frontend handoff.' },
+    ]);
+    prisma.workOrder.findFirst.mockResolvedValue({
+      id: 'work-order-1',
+      projectId: 'test-project-id',
+      taskId: 'task-1',
+      artifactId: null,
+      title: 'Build frontend shell',
+      instructions: 'Recover this frontend handoff.',
+      agentType: WorkOrderAgentType.FRONTEND,
+      priority: WorkOrderPriority.HIGH,
+      status: WorkOrderStatus.READY,
+      executionAttempt: 1,
+      executionRunId: null,
+      executionStartedAt: null,
+      dispatchedAt: null,
+      project: {
+        id: 'test-project-id',
+        companyName: 'TestCo',
+        brief: 'Build a shop',
+        stackKey: 'nextjs-nestjs',
+      },
+      task: {
+        id: 'task-1',
+        title: 'Frontend dashboard',
+        description: 'Client dashboard task.',
+        assignedToId: 'dev-1',
+        status: ProjectTaskStatus.TODO,
+      },
+      artifact: null,
+    });
+
+    const result = await service.recoverStaleProject('test-project-id', {
+      reason: 'Supervisor detected stale run and queued retry 2/3',
+      retryAttempt: 2,
+      maxRetries: 3,
+    });
+
+    expect(result).toEqual({
+      runId: expect.any(String),
+      readyWorkOrders: 1,
+      completedWorkOrders: 0,
+      failedWorkOrders: 1,
+      status: OrchestrationRunStatus.FAILED,
+      error: expect.stringContaining('Agent provider llm is unavailable: OpenRouter provider requires OPENROUTER_API_KEY'),
+    });
+    expect(prisma.orchestrationRun.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        providerMode: 'llm',
+        status: OrchestrationRunStatus.RUNNING,
+        currentNode: 'supervisor_recovery',
+      }),
+    });
+    expect(prisma.workOrderExecution.create).not.toHaveBeenCalled();
+    expect(prisma.artifact.create).not.toHaveBeenCalled();
+    expect(prisma.orchestrationRun.updateMany).toHaveBeenCalledWith({
+      where: { projectId: 'test-project-id', runId: result.runId },
+      data: expect.objectContaining({
+        status: OrchestrationRunStatus.FAILED,
+        currentNode: 'supervisor_recovery',
+        error: expect.stringContaining('Agent provider llm is unavailable: OpenRouter provider requires OPENROUTER_API_KEY'),
+        completedWorkOrders: 0,
+        failedWorkOrders: 1,
+        completedArtifacts: 0,
+      }),
+    });
+    expect(prisma.project.update).toHaveBeenCalledWith({
+      where: { id: 'test-project-id' },
+      data: { status: ProjectStatus.FAILED },
+    });
+    expect(notifications.notify).toHaveBeenCalledWith(expect.objectContaining({
+      projectId: 'test-project-id',
+      title: 'Supervisor recovery failed',
+      body: expect.stringContaining('Agent provider llm is unavailable: OpenRouter provider requires OPENROUTER_API_KEY'),
+    }));
+  });
+
+  it('executeWorkOrder fails the order when generated output violates the artifact contract', async () => {
+    prisma.workOrder.findFirst.mockResolvedValue({
+      id: 'work-order-1',
+      projectId: 'test-project-id',
+      taskId: 'task-1',
+      artifactId: null,
+      title: 'Build frontend shell',
+      instructions: 'Create the first dashboard shell.',
+      agentType: WorkOrderAgentType.FRONTEND,
+      priority: WorkOrderPriority.HIGH,
+      status: WorkOrderStatus.READY,
+      executionAttempt: 0,
+      dispatchedAt: null,
+      project: {
+        id: 'test-project-id',
+        companyName: 'TestCo',
+        brief: 'Build a shop',
+        stackKey: 'nextjs-nestjs',
+      },
+      task: {
+        id: 'task-1',
+        title: 'Frontend dashboard',
+        description: 'Client dashboard task.',
+        assignedToId: 'dev-1',
+        status: ProjectTaskStatus.TODO,
+      },
+      artifact: null,
+    });
+    vi.spyOn(mockAgentProvider, 'generateWorkOrderOutput').mockReturnValueOnce({
+      filePath: 'bad-output.txt',
+      displayName: 'Bad output',
+      language: 'text',
+      content: 'too short',
+    });
+
+    await expect(
+      service.executeWorkOrder('test-project-id', 'work-order-1', 'pm-1'),
+    ).rejects.toThrow('Artifact contract validation failed');
+
+    expect(prisma.artifact.create).not.toHaveBeenCalled();
+    expect(prisma.workOrder.update).toHaveBeenCalledWith({
+      where: { id: 'work-order-1' },
+      data: expect.objectContaining({
+        status: WorkOrderStatus.FAILED,
+        executionError: expect.stringContaining('Artifact contract validation failed'),
+      }),
+    });
+    expect(prisma.workOrderExecution.update).toHaveBeenCalledWith({
+      where: { executionRunId: expect.any(String) },
+      data: expect.objectContaining({
+        status: 'FAILED',
+        error: expect.stringContaining('Artifact contract validation failed'),
+      }),
+    });
   });
 });

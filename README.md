@@ -1,145 +1,211 @@
 # DevFlow Backend
 
-DevFlow is an AI-powered development workflow orchestration backend. It automates the full software delivery lifecycle — from receiving a feature request to opening a production-ready pull request — by coordinating a multi-agent LangGraph pipeline that plans, generates, reviews, and gates code changes. The backend exposes a REST API consumed by the DevFlow frontend and integrates with GitHub via a GitHub App to manage branches, commits, and pull request status.
+`devflow-be` is the NestJS API for the migrated DevFlow product. It serves the PM, DEV, CLIENT, and ADMIN workspaces used by `devlow-frontend`.
 
----
+The current production-ready surface is the project delivery lifecycle around intake, client invites, kickoff, tasks, work orders, artifacts, collaboration, timeline, notifications, delivery review, and OpenRouter-backed orchestration. DevFlow's full-project path uses LangGraph to coordinate custom agents and can hand approved generated artifacts to GitHub delivery when GitHub App credentials are configured.
 
 ## Prerequisites
 
 | Tool | Version |
-|------|---------|
+| --- | --- |
 | Node.js | 22.x |
-| npm | 10.x (bundled with Node 22) |
-| Docker + Docker Compose | Docker 24+ / Compose v2 |
-| PostgreSQL | 16 (provided via Docker) |
+| npm | 10.x |
+| PostgreSQL | Supabase Postgres or local PostgreSQL |
+| Supabase | Auth + Postgres project |
 
----
+## Setup
 
-## Quick Start (Docker Compose)
-
-The fastest way to run the full stack locally:
-
-```bash
-# 1. Copy environment template
-cp .env.example .env
-# Fill in API keys — see Environment Variables section below
-
-# 2. Start API + database
-docker-compose up --build
-
-# API is available at http://localhost:4000
-# Database is available at localhost:5432
-```
-
-To run in the background:
-
-```bash
-docker-compose up --build -d
-docker-compose logs -f api
-```
-
-To stop and clean up:
-
-```bash
-docker-compose down -v   # -v also removes the postgres_data volume
-```
-
----
-
-## Manual Setup
-
-```bash
-# 1. Clone the repository
-git clone <repo-url>
-cd devflow-backend
-
-# 2. Install dependencies
+```powershell
 npm install
-
-# 3. Configure environment
-cp .env.example .env
-# Open .env and fill in all required values
-
-# 4. Run Prisma migrations (creates/updates the database schema)
+Copy-Item .env.example .env
+npm run prisma:generate
 npm run prisma:migrate
+npm run build
+npm run start
+```
 
-# 5. Start the development server with hot-reload
+The API listens on `http://localhost:4000` by default. Health check:
+
+```powershell
+Invoke-RestMethod http://localhost:4000/health
+```
+
+For hot reload during development:
+
+```powershell
 npm run start:dev
 ```
 
-Other useful commands:
+## Environment
 
-```bash
-npm run build          # Compile TypeScript to dist/
-npm run start          # Run compiled output (production mode)
-npm run test           # Run Vitest test suite once
-npm run test:watch     # Run Vitest in watch mode
-npm run prisma:studio  # Open Prisma Studio (visual DB browser)
-npm run lint           # Lint src/ and test/
-npm run lint:fix       # Lint and auto-fix
+Required:
+
+```env
+DATABASE_URL="postgresql://..."
+SUPABASE_URL="https://your-project-ref.supabase.co"
 ```
 
----
+Common optional values:
 
-## API Endpoints
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/api/v1/health` | Health check — returns `{ status: "ok" }` |
-| `POST` | `/api/v1/jobs` | Create a new orchestration job from a feature request |
-| `GET` | `/api/v1/jobs/:jobId` | Get current status and metadata for a job |
-| `GET` | `/api/v1/jobs/:jobId/stream` | SSE stream of real-time agent log events for a job |
-| `POST` | `/api/v1/jobs/:jobId/gates/:gateName/approve` | Approve a named gate checkpoint to resume the pipeline |
-| `POST` | `/api/v1/jobs/:jobId/gates/:gateName/reject` | Reject a named gate checkpoint and halt the pipeline |
-| `GET` | `/api/v1/jobs/:jobId/artifact` | Retrieve the final artifact (PR URL, diff summary) for a completed job |
-
----
-
-## Environment Variables
-
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `DATABASE_URL` | Yes | PostgreSQL connection string |
-| `ANTHROPIC_API_KEY` | Yes | Anthropic API key for Claude models |
-| `OPENAI_API_KEY` | Yes | OpenAI API key (used by LangGraph tooling) |
-| `GITHUB_APP_ID` | Yes | GitHub App numeric ID |
-| `GITHUB_APP_PRIVATE_KEY_BASE64` | Yes | Base64-encoded PEM private key for the GitHub App |
-| `GITHUB_APP_INSTALLATION_ID` | Yes | Installation ID for the target GitHub org |
-| `GITHUB_ORG` | Yes | GitHub org where generated repos are created |
-| `PORT` | No | HTTP port (default: `4000`) |
-| `NODE_ENV` | No | `development` or `production` |
-| `LANGCHAIN_API_KEY` | No | LangSmith API key (Phase 2 tracing, not required in Phase 1) |
-| `LANGCHAIN_TRACING_V2` | No | Set to `"true"` to enable LangSmith tracing |
-
-### Encoding the GitHub App private key
-
-GitHub App private keys are downloaded as `.pem` files. Encode it for use as an environment variable:
-
-```bash
-# macOS / Linux
-base64 -w 0 your-app.private-key.pem
-
-# Windows (PowerShell)
-[Convert]::ToBase64String([IO.File]::ReadAllBytes("your-app.private-key.pem"))
+```env
+AGENT_PROVIDER="mock"
+LLM_PROVIDER="openrouter"
+OPENROUTER_API_KEY=""
+OPENROUTER_BASE_URL="https://openrouter.ai/api/v1"
+OPENROUTER_MODEL="deepseek/deepseek-v4-flash:free"
+OPENROUTER_FALLBACK_MODEL="nvidia/nemotron-3-nano-30b-a3b:free"
+OPENAI_BASE_URL="https://api.openai.com/v1"
+OPENAI_MODEL="gpt-4.1-mini"
+OPENAI_FALLBACK_MODEL=""
+OPENAI_API_KEY=""
+OPENCODE_BASE_URL="https://opencode.ai/zen/go/v1"
+OPENCODE_MODEL="deepseek-v4-flash"
+OPENCODE_FALLBACK_MODEL="deepseek-v4-pro"
+OPENCODE_API_KEY=""
+ANTHROPIC_BASE_URL="https://api.anthropic.com/v1"
+ANTHROPIC_MODEL="claude-3-5-haiku-20241022"
+ANTHROPIC_FALLBACK_MODEL=""
+ANTHROPIC_VERSION="2023-06-01"
+ANTHROPIC_API_KEY=""
+PORT=4000
+NODE_ENV="development"
+CORS_ORIGIN="http://localhost:3000"
+SUPABASE_SERVICE_ROLE_KEY=""
+SUPABASE_ANON_KEY=""
+# Alternate provider keys. The LangGraph and work-order agents use OpenRouter by default.
+GITHUB_APP_ID=""
+GITHUB_PRIVATE_KEY=""
+GITHUB_INSTALLATION_ID=""
+GITHUB_ORG=""
+LANGCHAIN_API_KEY=""
+LANGCHAIN_TRACING_V2="false"
+LANGCHAIN_PROJECT="devflow"
 ```
 
-Paste the output as the value of `GITHUB_APP_PRIVATE_KEY_BASE64`. The application decodes it at runtime in `configuration.ts`.
+`SUPABASE_SERVICE_ROLE_KEY` is server-side only. Never expose it to `devlow-frontend`.
 
----
+`AGENT_PROVIDER=mock` runs the deterministic local orchestration provider and does not require LLM or GitHub credentials. Use `AGENT_PROVIDER=llm` with `LLM_PROVIDER=openrouter` and `OPENROUTER_API_KEY` to run real LangGraph and work-order artifact generation through OpenRouter. If OpenRouter is throttled, `LLM_PROVIDER=opencode` with `OPENCODE_API_KEY`, `LLM_PROVIDER=openai` with `OPENAI_API_KEY`, or `LLM_PROVIDER=anthropic` with `ANTHROPIC_API_KEY` uses an alternate provider instead. The default OpenRouter model is `deepseek/deepseek-v4-flash:free`; the default OpenCode model is `deepseek-v4-flash`; the default OpenAI model is `gpt-4.1-mini`; the default Anthropic model is `claude-3-5-haiku-20241022`.
 
-## Gate Approval Flow
+The LangGraph path defines DevFlow's own agents: requirements parser, contract negotiator, frontend, backend, database, architecture, validator, and GitHub commit. LangGraph controls ordering, parallel fan-out, retries, and human approval gates. OpenRouter only supplies the model calls inside those custom agents. After Gate 2 approval, the GitHub commit node creates a private repository through the configured GitHub App, commits generated artifacts, injects CI, and stores `repoUrl` on the project.
 
-The DevFlow pipeline pauses at named checkpoints (gates) before performing irreversible actions — such as pushing a branch or opening a pull request. Gates allow a human operator to inspect the agent's output before the pipeline proceeds.
+GitHub delivery requires `GITHUB_APP_ID`, a valid PEM `GITHUB_PRIVATE_KEY`, `GITHUB_INSTALLATION_ID`, and `GITHUB_ORG`. `GITHUB_PRIVATE_KEY` can be base64-encoded PEM, raw PEM, or escaped-newline PEM; the app normalizes it before validating it. The orchestration provider endpoint includes `githubDelivery` readiness details so the app can show missing setup before Gate 2 delivery fails. The project orchestration API also exposes non-destructive live checks for the selected graph LLM provider and GitHub App delivery credentials, and the PM project view surfaces both checks before a real LangGraph-to-GitHub run. `npm run smoke:github` performs the same GitHub App installation owner and repository access verification before it allows a real smoke repository create.
 
-**How it works:**
+`npm run smoke:orchestration-readiness` is non-destructive and verifies the selected graph LLM provider plus GitHub App delivery credentials without creating a project or repository. It exits successfully while reporting blockers by default; set `ORCHESTRATION_READINESS_STRICT=true` when you want CI to fail on incomplete readiness. `npm run smoke:langgraph-github` is safe by default and skips before creating a repository. Set `LANGGRAPH_GITHUB_SMOKE_CREATE=true` only when you intentionally want a real end-to-end smoke repository created through the full LangGraph Gate 1 -> Gate 2 -> GitHub delivery flow. The destructive live smoke preflights OpenRouter, OpenCode, OpenAI, and Anthropic and uses the first configured provider that accepts a real request; set `LANGGRAPH_GITHUB_SMOKE_PROVIDER_AUTO=false` to test only the configured `LLM_PROVIDER`.
 
-1. Create a job via `POST /api/v1/jobs`. The pipeline starts running asynchronously.
-2. Poll `GET /api/v1/jobs/:jobId` until `status` is `"awaiting_gate"` and `currentGate` contains a gate name (e.g., `"pre-push"`).
-3. Review the pending output. You can stream agent logs via `GET /api/v1/jobs/:jobId/stream` to see what the agent produced.
-4. Send your decision:
-   - `POST /api/v1/jobs/:jobId/gates/:gateName/approve` — pipeline resumes from the checkpoint.
-   - `POST /api/v1/jobs/:jobId/gates/:gateName/reject` — pipeline is halted; `status` becomes `"rejected"`.
-5. Repeat for each gate until `status` reaches `"completed"` or `"failed"`.
-6. Retrieve the final artifact (PR URL) via `GET /api/v1/jobs/:jobId/artifact`.
+## Scripts
 
-Gate names are defined in the LangGraph workflow and will be documented per-pipeline in the `src/agents/` module.
+```powershell
+npm test              # Vitest unit/regression tests
+npm run build         # Compile NestJS to dist/
+npm run start         # Run compiled output
+npm run start:dev     # Development server
+npm run prisma:migrate
+npm run prisma:generate
+npm run prisma:studio
+npm run auth:set-role
+npm run seed:demo
+npm run seed:demo:check
+npm run seed:demo:smoke
+npm run smoke:openrouter
+npm run smoke:github
+npm run smoke:orchestration-readiness
+npm run smoke:langgraph-github
+```
+
+## Persona Demo Data
+
+The repeatable demo seed creates PM, DEV, and CLIENT records against real Supabase Auth/Profile data.
+
+Default demo users:
+
+| Persona | Email | Role |
+| --- | --- | --- |
+| PM | `devflow.pm@example.com` | `PM` |
+| Developer | `devflow.dev@example.com` | `DEV` |
+| Client | `devflow.client@example.com` | `CLIENT` |
+
+If `SUPABASE_SERVICE_ROLE_KEY` is set, missing default auth users are created through Supabase Auth Admin. If only `SUPABASE_ANON_KEY` is set and public signup is enabled, missing users are created through public signup. Otherwise the seed reuses existing profiles for each role.
+
+```powershell
+npm run seed:demo
+npm run seed:demo:check
+```
+
+With the API running and `SUPABASE_ANON_KEY` available:
+
+```powershell
+npm run seed:demo:smoke
+```
+
+The smoke signs in as each persona and validates positive access plus forbidden cross-role access.
+
+Optional seed overrides:
+
+```env
+DEMO_PROJECT_ID="demo-persona-project"
+DEMO_PM_EMAIL="devflow.pm@example.com"
+DEMO_DEV_EMAIL="devflow.dev@example.com"
+DEMO_CLIENT_EMAIL="devflow.client@example.com"
+DEMO_AUTH_PASSWORD="DevFlowDemo123!"
+```
+
+## Current API Surface
+
+All protected endpoints expect `Authorization: Bearer <Supabase access token>`.
+
+Public:
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/health` | Health probe |
+| `POST` | `/inquiries` | Public project inquiry |
+| `GET` | `/client-invites/status?email=...` | Public invite status lookup |
+
+Authenticated:
+
+| Area | Representative endpoints |
+| --- | --- |
+| Auth | `GET /auth/me` |
+| Projects | `GET /projects`, `POST /projects`, `GET/PATCH /projects/:id` |
+| Members | `POST /projects/:id/members`, `DELETE /projects/:id/members/:userId` |
+| Kickoff | `GET/PATCH /projects/:id/kickoff`, `POST /projects/:id/kickoff/tasks`, `POST /projects/:id/kickoff/work-orders` |
+| Tasks | `GET/POST /projects/:id/tasks`, `PATCH /projects/:id/tasks/:taskId`, comments/activity endpoints |
+| Work orders | `GET/POST /projects/:id/work-orders`, `PATCH /projects/:id/work-orders/:workOrderId`, `POST /projects/:id/work-orders/:workOrderId/dispatch` |
+| Artifacts | `GET /projects/:id/artifacts`, artifact detail, share, review, output review, publish, revision endpoints |
+| Collaboration | conversations, messages, read state, documents, document review under `/projects/:projectId/...` |
+| Delivery | `GET /projects/:id/delivery-review`, accept/revision/resolve endpoints |
+| Timeline/events | `GET /projects/:id/timeline`, `GET /projects/:id/events` |
+| Notifications | `GET /notifications`, read endpoints |
+| Profiles | `GET /profiles` for PM/ADMIN profile search |
+| Client invites | `GET /client-invites/me`, `POST /client-invites/accept` for CLIENT users |
+| Orchestration bridge | `POST /projects/:id/orchestration/start`, status/gate endpoints, mock-provider work-order dispatch |
+
+See `docs/architecture/production-readiness.md` for the role matrix, lifecycle rules, data-integrity rules, and verification baseline.
+
+## Frontend Pairing
+
+Run the frontend separately from `../devlow-frontend`:
+
+```powershell
+cd ..\devlow-frontend
+Copy-Item .env.example .env.local
+npm install
+npm run dev
+```
+
+Use matching Supabase project values in both apps. The frontend only receives public values (`NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `NEXT_PUBLIC_API_URL`).
+
+## Verification Baseline
+
+```powershell
+npm test
+npm run build
+npm run seed:demo
+npm run seed:demo:check
+npm run seed:demo:smoke
+npm run smoke:openrouter  # skips when OPENROUTER_API_KEY is absent
+
+cd ..\devlow-frontend
+npm run typecheck
+npm run build
+```

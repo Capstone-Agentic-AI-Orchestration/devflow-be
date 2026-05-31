@@ -1,8 +1,28 @@
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit, ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Octokit } from '@octokit/rest';
 import { createAppAuth } from '@octokit/auth-app';
+import { createPrivateKey } from 'node:crypto';
 import { GitHubArtifact } from './github.types';
+
+export interface GithubDeliveryStatus {
+  configured: boolean;
+  available: boolean;
+  owner: string | null;
+  ownerSource: 'env' | 'installation' | null;
+  missingRequirements: string[];
+  reason: string | null;
+}
+
+export interface GithubDeliveryVerification {
+  ok: boolean;
+  status: GithubDeliveryStatus;
+  owner: string | null;
+  installationOwner: string | null;
+  repositoriesVisible: number | null;
+  permissions: Record<string, string> | null;
+  reason: string | null;
+}
 
 const CI_WORKFLOW_CONTENT = `name: CI
 
@@ -34,15 +54,31 @@ export class GithubService implements OnModuleInit {
   private octokit!: Octokit;
   private installationId!: number;
   private ownerLogin!: string;
+  private ownerSource: GithubDeliveryStatus['ownerSource'] = null;
+  private hasAppId = false;
+  private hasPrivateKey = false;
+  private privateKeyValid = false;
 
   constructor(private readonly configService: ConfigService) {}
 
   onModuleInit(): void {
-    const appId = this.configService.get<string>('github.appId')!;
-    const privateKey = this.configService.get<string>('github.privateKey')!;
+    const appId = this.configService.get<string>('github.appId');
+    const privateKey = this.configService.get<string>('github.privateKey');
+    this.hasAppId = Boolean(appId);
+    this.hasPrivateKey = Boolean(privateKey);
+    this.privateKeyValid = this.isPrivateKeyValid(privateKey);
     this.installationId = this.configService.get<number>(
       'github.installationId',
-    )!;
+    ) ?? 0;
+    this.ownerLogin = this.configService.get<string>('github.org') ?? '';
+    this.ownerSource = this.ownerLogin ? 'env' : null;
+
+    if (!appId || !privateKey || !this.privateKeyValid || !this.installationId) {
+      this.logger.warn(
+        'GitHub App credentials are not configured; GitHub commit automation is disabled',
+      );
+      return;
+    }
 
     this.octokit = new Octokit({
       authStrategy: createAppAuth,
@@ -52,6 +88,21 @@ export class GithubService implements OnModuleInit {
         installationId: this.installationId,
       },
     });
+  }
+
+  getDeliveryStatus(): GithubDeliveryStatus {
+    const missingRequirements = this.missingRequirements();
+    const configured = missingRequirements.length === 0;
+    return {
+      configured,
+      available: configured,
+      owner: this.ownerLogin || null,
+      ownerSource: this.ownerSource,
+      missingRequirements,
+      reason: configured
+        ? null
+        : `GitHub delivery requires ${missingRequirements.join(', ')}.`,
+    };
   }
 
   private slugify(name: string): string {
@@ -66,16 +117,19 @@ export class GithubService implements OnModuleInit {
   }
 
   private async getOwner(): Promise<string> {
+    this.assertConfigured();
     if (this.ownerLogin) return this.ownerLogin;
     const { data } = await this.octokit.apps.getInstallation({
       installation_id: this.installationId,
     });
     this.ownerLogin =
       data.account && 'login' in data.account ? data.account.login : '';
+    this.ownerSource = 'installation';
     return this.ownerLogin;
   }
 
   async createRepo(name: string): Promise<string> {
+    this.assertConfigured();
     this.logger.log(`Creating repository: ${name}`);
     const owner = await this.getOwner();
     const { data } = await this.octokit.repos.createInOrg({
@@ -89,11 +143,80 @@ export class GithubService implements OnModuleInit {
     return data.clone_url;
   }
 
+  async verifyDeliveryAccess(): Promise<GithubDeliveryVerification> {
+    const status = this.getDeliveryStatus();
+    if (!status.available) {
+      return {
+        ok: false,
+        status,
+        owner: status.owner,
+        installationOwner: null,
+        repositoriesVisible: null,
+        permissions: null,
+        reason: status.reason,
+      };
+    }
+
+    try {
+      const { data: installation } = await this.octokit.apps.getInstallation({
+        installation_id: this.installationId,
+      });
+      const installationOwner =
+        installation.account && 'login' in installation.account
+          ? installation.account.login
+          : null;
+
+      if (this.ownerLogin && installationOwner && this.ownerLogin !== installationOwner) {
+        return {
+          ok: false,
+          status,
+          owner: this.ownerLogin,
+          installationOwner,
+          repositoriesVisible: null,
+          permissions: installation.permissions ?? null,
+          reason: `GITHUB_ORG (${this.ownerLogin}) does not match GitHub App installation owner (${installationOwner}).`,
+        };
+      }
+
+      if (!this.ownerLogin && installationOwner) {
+        this.ownerLogin = installationOwner;
+        this.ownerSource = 'installation';
+      }
+
+      const { data: repositories } = await this.octokit.request(
+        'GET /installation/repositories',
+        { per_page: 1 },
+      );
+
+      return {
+        ok: true,
+        status: this.getDeliveryStatus(),
+        owner: this.ownerLogin || installationOwner,
+        installationOwner,
+        repositoriesVisible: repositories.total_count ?? null,
+        permissions: installation.permissions ?? null,
+        reason: null,
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return {
+        ok: false,
+        status,
+        owner: status.owner,
+        installationOwner: null,
+        repositoriesVisible: null,
+        permissions: null,
+        reason: `GitHub App installation verification failed: ${message}`,
+      };
+    }
+  }
+
   async commitFiles(
     repoName: string,
     artifacts: GitHubArtifact[],
     message: string,
   ): Promise<void> {
+    this.assertConfigured();
     this.logger.log(
       `Committing ${artifacts.length} files to ${repoName}: "${message}"`,
     );
@@ -166,5 +289,35 @@ export class GithubService implements OnModuleInit {
       ],
       'ci: add GitHub Actions workflow',
     );
+  }
+
+  private assertConfigured(): void {
+    const missingRequirements = this.missingRequirements();
+    if (missingRequirements.length > 0) {
+      throw new ServiceUnavailableException(
+        `GitHub commit automation is not configured: missing ${missingRequirements.join(', ')}`,
+      );
+    }
+  }
+
+  private missingRequirements(): string[] {
+    const missing: string[] = [];
+    if (!this.hasAppId) missing.push('GITHUB_APP_ID');
+    if (!this.hasPrivateKey) missing.push('GITHUB_PRIVATE_KEY');
+    if (this.hasPrivateKey && !this.privateKeyValid) missing.push('valid GITHUB_PRIVATE_KEY');
+    if (!this.installationId) missing.push('GITHUB_INSTALLATION_ID');
+    if (!this.ownerLogin) missing.push('GITHUB_ORG');
+    return [...new Set(missing)];
+  }
+
+  private isPrivateKeyValid(privateKey: string | undefined): boolean {
+    if (!privateKey) return false;
+
+    try {
+      createPrivateKey(privateKey);
+      return true;
+    } catch {
+      return false;
+    }
   }
 }

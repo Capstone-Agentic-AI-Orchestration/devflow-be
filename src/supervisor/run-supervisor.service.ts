@@ -1,7 +1,14 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { forwardRef, Inject, Injectable, Logger } from '@nestjs/common';
 import { Interval } from '@nestjs/schedule';
+import {
+  OrchestrationRunStatus,
+  ProjectStatus,
+  WorkOrderExecutionStatus,
+  WorkOrderStatus,
+} from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { EventLogService } from './event-log.service';
+import { OrchestrationService } from '../orchestration/orchestration.service';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -18,9 +25,16 @@ const POLL_INTERVAL_MS = 60_000;
 const STUCK_THRESHOLD_MS = 10 * 60 * 1_000; // 10 minutes
 
 /**
- * Project statuses that are terminal — runs in these states are never retried.
+ * Project statuses that represent active automation. Human-wait states such as
+ * AWAITING_GATE_1 and AWAITING_GATE_2 can be idle for a long time by design.
  */
-const TERMINAL_STATUSES = ['DELIVERED', 'FAILED'] as const;
+const SUPERVISED_STATUSES = [
+  ProjectStatus.PARSING_REQUIREMENTS,
+  ProjectStatus.NEGOTIATING_CONTRACT,
+  ProjectStatus.GENERATING_CODE,
+  ProjectStatus.COMMITTING,
+] as const;
+const SUPERVISOR_NODE = 'supervisor';
 
 // ─── Service ──────────────────────────────────────────────────────────────────
 
@@ -31,12 +45,12 @@ const TERMINAL_STATUSES = ['DELIVERED', 'FAILED'] as const;
  *   1. Stuck run detected (no EventLog entry in > 10 minutes)
  *   2. Check RunBudget:
  *      a. retryCount >= maxRetries  →  escalateToHuman()  →  status = FAILED
- *      b. Otherwise                 →  increment retryCount, log STUCK, reset
- *         status to previous active state. The OrchestrationService's existing
- *         resume/poll logic re-invokes LangGraph from the last checkpoint.
+ *      b. Otherwise                 →  increment retryCount, log STUCK, requeue
+ *         stale dispatched work orders, then ask OrchestrationService to create
+ *         and execute a durable recovery run.
  *
- * The supervisor DOES NOT call the LangGraph graph directly. It only updates
- * DB state. OrchestrationService handles actual re-invocation.
+ * The supervisor does not execute agent work directly. It only detects stale
+ * state and delegates recovery execution to OrchestrationService.
  */
 @Injectable()
 export class RunSupervisorService {
@@ -45,6 +59,8 @@ export class RunSupervisorService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly eventLog: EventLogService,
+    @Inject(forwardRef(() => OrchestrationService))
+    private readonly orchestration: OrchestrationService,
   ) {}
 
   // ── Polling tick ───────────────────────────────────────────────────────────
@@ -125,30 +141,35 @@ export class RunSupervisorService {
       `[${projectId}] Escalation context — ${budgetInfo} | last known node: ${lastNode} | reason: ${reason}`,
     );
 
+    const failedAt = new Date();
+
     // Persist state changes and event log atomically via allSettled.
     await Promise.allSettled([
       this.prisma.project.update({
         where: { id: projectId },
-        data: { status: 'FAILED' },
+        data: { status: ProjectStatus.FAILED },
       }),
-      this.eventLog.logEscalated(projectId, 'supervisor', reason),
+      this.failRunningRuntimeState(projectId, reason, failedAt),
+      this.failDispatchedWorkOrders(projectId, reason, failedAt),
+      this.eventLog.logEscalated(projectId, SUPERVISOR_NODE, reason),
     ]);
   }
 
   // ── Private helpers ────────────────────────────────────────────────────────
 
   /**
-   * Returns all projects that are active (non-terminal) and have had no
+   * Returns all projects that are in active automation statuses and have had no
    * EventLog activity in the past STUCK_THRESHOLD_MS milliseconds.
    *
-   * Uses a raw query to perform the correlated subquery efficiently. The NOT IN
-   * list covers terminal statuses; prisma.$queryRaw returns typed rows.
+   * Uses a raw query to perform the correlated subquery efficiently. The status
+   * list intentionally excludes human-wait states; prisma.$queryRaw returns
+   * typed rows.
    */
   private async findStuckProjects(): Promise<StuckProject[]> {
     const threshold = new Date(Date.now() - STUCK_THRESHOLD_MS);
 
     // Raw SQL: join Project to RunBudget and check max(occurredAt) per project.
-    // Projects with no EventLog rows at all are also considered stuck (NULL < threshold).
+    // Projects with no EventLog rows at all are also considered stuck.
     const rows = await this.prisma.$queryRaw<StuckProjectRow[]>`
       SELECT
         p.id,
@@ -159,12 +180,21 @@ export class RunSupervisorService {
         rb."tokenBudget"
       FROM "Project" p
       INNER JOIN run_budgets rb ON rb."projectId" = p.id
-      WHERE p.status NOT IN (${TERMINAL_STATUSES[0]}, ${TERMINAL_STATUSES[1]})
+      LEFT JOIN LATERAL (
+        SELECT MAX(el."occurredAt") AS "lastEventAt"
+        FROM event_logs el
+        WHERE el."projectId" = p.id
+      ) last_event ON true
+      WHERE p.status IN (
+        CAST(${SUPERVISED_STATUSES[0]} AS "ProjectStatus"),
+        CAST(${SUPERVISED_STATUSES[1]} AS "ProjectStatus"),
+        CAST(${SUPERVISED_STATUSES[2]} AS "ProjectStatus"),
+        CAST(${SUPERVISED_STATUSES[3]} AS "ProjectStatus")
+      )
         AND (
-          SELECT MAX(el."occurredAt")
-          FROM event_logs el
-          WHERE el."projectId" = p.id
-        ) < ${threshold}
+          last_event."lastEventAt" IS NULL
+          OR last_event."lastEventAt" < ${threshold}
+        )
     `;
 
     return rows.map((row) => ({
@@ -200,6 +230,9 @@ export class RunSupervisorService {
       `[${project.id}] Auto-retrying stuck run (attempt ${project.retryCount + 1}/${project.maxRetries})`,
     );
 
+    const recoveredAt = new Date();
+    const reason = `Supervisor detected stale run and queued retry ${project.retryCount + 1}/${project.maxRetries}`;
+
     await Promise.allSettled([
       // Increment retry counter.
       this.prisma.runBudget.update({
@@ -207,7 +240,8 @@ export class RunSupervisorService {
         data: { retryCount: { increment: 1 } },
       }),
       // Write the STUCK audit event.
-      this.eventLog.logStuck(project.id, 'supervisor'),
+      this.eventLog.logStuck(project.id, SUPERVISOR_NODE),
+      this.failRunningRuntimeState(project.id, reason, recoveredAt),
       // Reset project status to its current active state to signal re-invocation.
       // The previous status is preserved — OrchestrationService polls status and
       // resumes the graph from the LangGraph checkpoint when it sees an active state.
@@ -217,9 +251,115 @@ export class RunSupervisorService {
       }),
     ]);
 
+    const requeueResult = await Promise.allSettled([
+      this.requeueDispatchedWorkOrders(project.id, reason, recoveredAt),
+    ]);
+
+    if (requeueResult[0]?.status === 'rejected') {
+      this.logger.error(
+        `[${project.id}] Supervisor could not requeue dispatched work orders: ${requeueResult[0].reason instanceof Error ? requeueResult[0].reason.message : String(requeueResult[0].reason)}`,
+      );
+      return;
+    }
+
+    await this.orchestration
+      .recoverStaleProject(project.id, {
+        reason,
+        retryAttempt: project.retryCount + 1,
+        maxRetries: project.maxRetries,
+      })
+      .then((result) => {
+        this.logger.log(
+          `[${project.id}] Supervisor recovery run ${result.runId} finished with ${result.status}`,
+        );
+      })
+      .catch((err: unknown) => {
+        this.logger.error(
+          `[${project.id}] Supervisor recovery execution failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      });
+
     this.logger.log(
-      `[${project.id}] Stuck run marked for retry. OrchestrationService will resume from checkpoint.`,
+      `[${project.id}] Stuck run marked for retry and recovery execution was requested.`,
     );
+  }
+
+  private async failRunningRuntimeState(
+    projectId: string,
+    reason: string,
+    completedAt: Date,
+  ): Promise<void> {
+    await Promise.allSettled([
+      this.prisma.orchestrationRun.updateMany({
+        where: {
+          projectId,
+          status: OrchestrationRunStatus.RUNNING,
+        },
+        data: {
+          status: OrchestrationRunStatus.FAILED,
+          currentNode: SUPERVISOR_NODE,
+          error: reason,
+          completedAt,
+        },
+      }),
+      this.prisma.workOrderExecution.updateMany({
+        where: {
+          projectId,
+          status: WorkOrderExecutionStatus.RUNNING,
+        },
+        data: {
+          status: WorkOrderExecutionStatus.FAILED,
+          error: reason,
+          completedAt,
+          metadata: {
+            recoveredBy: SUPERVISOR_NODE,
+            reason,
+            recoveredAt: completedAt.toISOString(),
+          },
+        },
+      }),
+    ]);
+  }
+
+  private async requeueDispatchedWorkOrders(
+    projectId: string,
+    reason: string,
+    recoveredAt: Date,
+  ): Promise<void> {
+    await this.prisma.workOrder.updateMany({
+      where: {
+        projectId,
+        status: WorkOrderStatus.DISPATCHED,
+      },
+      data: {
+        status: WorkOrderStatus.READY,
+        executionRunId: null,
+        executionStartedAt: null,
+        executionCompletedAt: recoveredAt,
+        executionError: reason,
+        lastEventAt: recoveredAt,
+      },
+    });
+  }
+
+  private async failDispatchedWorkOrders(
+    projectId: string,
+    reason: string,
+    failedAt: Date,
+  ): Promise<void> {
+    await this.prisma.workOrder.updateMany({
+      where: {
+        projectId,
+        status: WorkOrderStatus.DISPATCHED,
+      },
+      data: {
+        status: WorkOrderStatus.FAILED,
+        executionCompletedAt: failedAt,
+        executionError: reason,
+        lastEventAt: failedAt,
+        failedAt,
+      },
+    });
   }
 }
 
@@ -227,7 +367,7 @@ export class RunSupervisorService {
 
 interface StuckProjectRow {
   id: string;
-  status: string;
+  status: ProjectStatus;
   retryCount: bigint | number;
   maxRetries: bigint | number;
   tokensConsumed: bigint | number;
@@ -236,7 +376,7 @@ interface StuckProjectRow {
 
 interface StuckProject {
   id: string;
-  status: string;
+  status: ProjectStatus;
   retryCount: number;
   maxRetries: number;
   tokensConsumed: number;
