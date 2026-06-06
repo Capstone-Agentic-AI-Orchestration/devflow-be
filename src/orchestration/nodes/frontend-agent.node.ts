@@ -50,8 +50,12 @@ export class FrontendAgentNode {
         .filter(Boolean)
         .join(' ');
 
-      const memories = await this.memory.readRelevant('frontend', memoryQuery);
-      const memoryContext = this.memory.formatAsContext(memories);
+      const memoryBundle = await this.memory.buildContextForAgent({
+        agentType: 'frontend',
+        projectId: state.projectId,
+        query: memoryQuery,
+      });
+      const memoryContext = memoryBundle.context;
 
       // ── 2. Build file list ───────────────────────────────────────────────
       const frontendFiles = state.contract.fileManifest.filter((f) =>
@@ -77,6 +81,7 @@ export class FrontendAgentNode {
         'frontend',
         memoryQuery,
         state.stackKey,
+        state.projectId,
       );
 
       if (skipCandidate) {
@@ -151,7 +156,7 @@ Generate complete, production-quality code for each file. For README-frontend.md
       );
 
       this.logger.log(
-        `[${state.projectId}] Frontend agent generated ${artifacts.length} files (${memories.length} memories injected)`,
+        `[${state.projectId}] Frontend agent generated ${artifacts.length} files (${memoryBundle.total} layered memories injected)`,
       );
 
       // Log COMPLETED with cost metadata — budget is updated atomically inside.

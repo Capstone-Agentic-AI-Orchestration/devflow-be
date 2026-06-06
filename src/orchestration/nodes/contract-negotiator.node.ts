@@ -65,8 +65,12 @@ export class ContractNegotiatorNode {
         .filter(Boolean)
         .join(' ');
 
-      const memories = await this.memory.readRelevant('contract', memoryQuery);
-      const memoryContext = this.memory.formatAsContext(memories);
+      const memoryBundle = await this.memory.buildContextForAgent({
+        agentType: 'contract',
+        projectId: state.projectId,
+        query: memoryQuery,
+      });
+      const memoryContext = memoryBundle.context;
 
       const requirementsSummary = JSON.stringify(state.requirements, null, 2);
 
@@ -131,7 +135,7 @@ Produce 5–10 acceptance criteria as clear, testable statements.`,
       };
 
       this.logger.log(
-        `[${state.projectId}] Contract negotiated: ${contract.fileManifest.length} files in manifest (${memories.length} patterns referenced)`,
+        `[${state.projectId}] Contract negotiated: ${contract.fileManifest.length} files in manifest (${memoryBundle.total} layered memories referenced)`,
       );
 
       // Log COMPLETED with cost metadata — budget is updated atomically inside.

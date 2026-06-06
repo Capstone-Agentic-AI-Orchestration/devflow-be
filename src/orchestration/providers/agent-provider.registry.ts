@@ -85,6 +85,7 @@ export class AgentProviderRegistry {
       openai: 'OpenAI',
       anthropic: 'Anthropic',
       opencode: 'OpenCode',
+      gemini: 'Gemini',
     };
 
     return names[provider] ?? provider;

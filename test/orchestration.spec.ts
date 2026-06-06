@@ -100,7 +100,7 @@ function makePrismaMock() {
       update: vi.fn().mockResolvedValue({ id: 'execution-1' }),
     },
     runBudget: {
-      create: vi.fn().mockResolvedValue({}),
+      upsert: vi.fn().mockResolvedValue({}),
     },
     eventLog: {
       create: vi.fn().mockResolvedValue({}),
@@ -126,6 +126,7 @@ function makeMemoryMock() {
     writeMistake: vi.fn().mockResolvedValue(undefined),
     writeSkill: vi.fn().mockResolvedValue(undefined),
     writePattern: vi.fn().mockResolvedValue(undefined),
+    writeProjectCoreMemory: vi.fn().mockResolvedValue(undefined),
   };
 }
 
@@ -175,6 +176,8 @@ describe('OrchestrationService', () => {
   let originalOpenRouterFallbackModel: string | undefined;
   let originalAnthropicApiKey: string | undefined;
   let originalOpenAiApiKey: string | undefined;
+  let originalGeminiApiKey: string | undefined;
+  let originalGeminiFallbackModel: string | undefined;
 
   beforeEach(() => {
     originalAgentProvider = process.env.AGENT_PROVIDER;
@@ -185,6 +188,8 @@ describe('OrchestrationService', () => {
     originalOpenRouterFallbackModel = process.env.OPENROUTER_FALLBACK_MODEL;
     originalAnthropicApiKey = process.env.ANTHROPIC_API_KEY;
     originalOpenAiApiKey = process.env.OPENAI_API_KEY;
+    originalGeminiApiKey = process.env.GEMINI_API_KEY;
+    originalGeminiFallbackModel = process.env.GEMINI_FALLBACK_MODEL;
     process.env.AGENT_PROVIDER = 'mock';
     process.env.LLM_PROVIDER = 'openrouter';
     process.env.OPENROUTER_MODEL = 'deepseek/deepseek-v4-flash:free';
@@ -193,6 +198,8 @@ describe('OrchestrationService', () => {
     delete process.env.OPENROUTER_FALLBACK_MODEL;
     delete process.env.ANTHROPIC_API_KEY;
     delete process.env.OPENAI_API_KEY;
+    delete process.env.GEMINI_API_KEY;
+    delete process.env.GEMINI_FALLBACK_MODEL;
 
     prisma = makePrismaMock();
     memory = makeMemoryMock();
@@ -304,6 +311,16 @@ describe('OrchestrationService', () => {
     } else {
       process.env.OPENAI_API_KEY = originalOpenAiApiKey;
     }
+    if (originalGeminiApiKey === undefined) {
+      delete process.env.GEMINI_API_KEY;
+    } else {
+      process.env.GEMINI_API_KEY = originalGeminiApiKey;
+    }
+    if (originalGeminiFallbackModel === undefined) {
+      delete process.env.GEMINI_FALLBACK_MODEL;
+    } else {
+      process.env.GEMINI_FALLBACK_MODEL = originalGeminiFallbackModel;
+    }
     vi.restoreAllMocks();
   });
 
@@ -325,6 +342,14 @@ describe('OrchestrationService', () => {
         runId,
         status: 'RUNNING',
       }),
+    });
+    expect(prisma.runBudget.upsert).toHaveBeenCalledWith({
+      where: { projectId: 'test-project-id' },
+      update: {
+        tokensConsumed: 0,
+        retryCount: 0,
+      },
+      create: { projectId: 'test-project-id' },
     });
   });
 
@@ -384,6 +409,26 @@ describe('OrchestrationService', () => {
       expect.objectContaining({ gate2Approved: true, gate2Notes: 'looks good' }),
     );
     expect(invoke).toHaveBeenCalledWith(null, expect.anything());
+  });
+
+  it('resumeGate2 blocks LLM GitHub delivery when GitHub is not configured', async () => {
+    process.env.AGENT_PROVIDER = 'llm';
+    process.env.OPENROUTER_API_KEY = 'test-openrouter-key';
+    prisma.project.findUnique.mockResolvedValue({ runId: 'run-002' });
+    const updateState = vi.fn().mockResolvedValue({});
+    const invoke = vi.fn().mockResolvedValue({});
+    (service as unknown as { graph: unknown }).graph = { updateState, invoke };
+    (service as unknown as { checkpointer: { get: ReturnType<typeof vi.fn> } }).checkpointer = {
+      get: vi.fn().mockResolvedValue(null),
+    };
+
+    await expect(
+      service.resumeGate2('test-project-id', true, 'ship it'),
+    ).rejects.toThrow('GitHub delivery requires');
+
+    expect(prisma.gateEvent.create).not.toHaveBeenCalled();
+    expect(updateState).not.toHaveBeenCalled();
+    expect(invoke).not.toHaveBeenCalled();
   });
 
   it('getStatus returns UNKNOWN when project has no runId', async () => {
@@ -511,14 +556,49 @@ describe('OrchestrationService', () => {
     ]));
   });
 
-  it('startRun rejects LLM orchestration when GitHub delivery is not configured', async () => {
+  it('getProviderStatus reports Gemini as available when a key is configured', () => {
+    process.env.AGENT_PROVIDER = 'llm';
+    process.env.LLM_PROVIDER = 'gemini';
+    process.env.GEMINI_API_KEY = 'test-gemini-key';
+    process.env.GEMINI_FALLBACK_MODEL = 'gemini-3.5-pro';
+
+    const status = service.getProviderStatus();
+
+    expect(status).toEqual(expect.objectContaining({
+      requestedMode: 'llm',
+      activeMode: 'llm',
+      available: true,
+      fallbackMode: null,
+      missingRequirements: [],
+      reason: null,
+      provider: 'gemini',
+      model: 'gemini-3.5-flash',
+      fallbackModel: 'gemini-3.5-pro',
+    }));
+    expect(status.providers).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        mode: 'llm',
+        displayName: 'Gemini LLM Provider',
+        available: true,
+      }),
+    ]));
+  });
+
+  it('startRun allows LLM generation when GitHub delivery is not configured', async () => {
     process.env.AGENT_PROVIDER = 'llm';
     process.env.OPENROUTER_API_KEY = 'test-openrouter-key';
+    (service as unknown as { graph: { invoke: ReturnType<typeof vi.fn> } }).graph = {
+      invoke: vi.fn().mockResolvedValue({}),
+    };
 
-    await expect(
-      service.startRun('test-project-id', 'Build a shop', 'nextjs-nestjs', 'TestCo'),
-    ).rejects.toThrow('GitHub delivery requires');
-    expect(prisma.project.update).not.toHaveBeenCalled();
+    const runId = await service.startRun('test-project-id', 'Build a shop', 'nextjs-nestjs', 'TestCo');
+
+    expect(runId).toBeTruthy();
+    expect(prisma.project.update).toHaveBeenCalledWith({
+      where: { id: 'test-project-id' },
+      data: { runId },
+    });
+    expect(github.getDeliveryStatus).not.toHaveBeenCalled();
   });
 
   it('executeWorkOrder records execution logs, creates an artifact, and links it back to work order and task', async () => {

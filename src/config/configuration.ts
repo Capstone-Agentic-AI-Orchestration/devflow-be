@@ -47,6 +47,8 @@ export default () => {
     orchestration: {
       agentProvider: env.data.AGENT_PROVIDER,
       llmProvider: env.data.LLM_PROVIDER,
+      llmRequestTimeoutMs: env.data.LLM_REQUEST_TIMEOUT_MS,
+      llmConcurrencyLimit: env.data.LLM_CONCURRENCY_LIMIT,
       openrouter: {
         apiKey: env.data.OPENROUTER_API_KEY,
         baseUrl: env.data.OPENROUTER_BASE_URL,
@@ -58,6 +60,12 @@ export default () => {
         baseUrl: env.data.OPENCODE_BASE_URL,
         model: env.data.OPENCODE_MODEL,
         fallbackModel: env.data.OPENCODE_FALLBACK_MODEL || undefined,
+      },
+      gemini: {
+        apiKey: env.data.GEMINI_API_KEY,
+        baseUrl: env.data.GEMINI_BASE_URL,
+        model: env.data.GEMINI_MODEL,
+        fallbackModel: env.data.GEMINI_FALLBACK_MODEL || undefined,
       },
     },
     supabase: {

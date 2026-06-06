@@ -726,6 +726,11 @@ model AgentMemory {
   id         String                      @id @default(cuid())
   /// Which agent produced this memory: frontend | backend | database | architecture | contract
   agentType  String
+  /// Optional profile for future named agents; current runtime still keys by agentType.
+  agentProfileId String?
+  agentProfile AgentProfile?            @relation(fields: [agentProfileId], references: [id], onDelete: SetNull)
+  /// Controls whether a memory is private to an agent, shared by one project, or globally reusable.
+  scope      AgentMemoryScope            @default(AGENT_PRIVATE)
   /// Partition key for similarity search scoping
   memoryType AgentMemoryType
   /// The raw text that was embedded (artifact content or summary)
@@ -736,11 +741,46 @@ model AgentMemory {
   metadata   Json                        @default("{}")
   /// Source project — nullable so global patterns survive project deletion
   projectId  String?
+  sourceType String?
+  importance Float                       @default(0.5)
+  lastUsedAt DateTime?
+  usageCount Int                         @default(0)
+  expiresAt  DateTime?
+  approvedAt DateTime?
+  approvalSource String?
   createdAt  DateTime                    @default(now())
 
   @@index([agentType, memoryType])
   @@index([projectId])
+  @@index([scope, projectId])
+  @@index([agentType, scope, memoryType])
+  @@index([agentType, projectId, scope])
+  @@index([agentProfileId])
+  @@index([approvedAt])
   @@map("agent_memories")
+}
+
+model AgentProfile {
+  id          String        @id @default(cuid())
+  slug        String        @unique
+  displayName String
+  role        String
+  agentType   String
+  modelHint   String?
+  active      Boolean       @default(true)
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+  memories    AgentMemory[]
+
+  @@index([agentType, active])
+  @@map("agent_profiles")
+}
+
+enum AgentMemoryScope {
+  AGENT_PRIVATE
+  PROJECT_CORE
+  PROJECT_AGENT
+  GLOBAL_PATTERN
 }
 
 enum AgentMemoryType {

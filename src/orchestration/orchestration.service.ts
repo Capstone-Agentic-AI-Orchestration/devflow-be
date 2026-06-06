@@ -255,15 +255,6 @@ export class OrchestrationService implements OnModuleInit {
   ): Promise<string> {
     const runId = createId();
     this.agentProviderRegistry.getActiveProviderOrThrow();
-    if (this.agentProviderMode() === 'llm') {
-      const githubDelivery = this.github.getDeliveryStatus();
-      if (!githubDelivery.available) {
-        throw new Error(
-          githubDelivery.reason ??
-            'GitHub delivery is not configured for LLM orchestration.',
-        );
-      }
-    }
 
     this.logger.log(
       `Starting run ${runId} for project ${projectId} (${companyName})`,
@@ -297,9 +288,14 @@ export class OrchestrationService implements OnModuleInit {
       },
     });
 
-    // Initialise run budget (Phase 2B)
-    await this.prisma.runBudget.create({
-      data: { projectId },
+    // Project-scoped budget counters are reset at run start until budgets become run-scoped.
+    await this.prisma.runBudget.upsert({
+      where: { projectId },
+      update: {
+        tokensConsumed: 0,
+        retryCount: 0,
+      },
+      create: { projectId },
     }).catch(() => undefined);
 
     const config = threadConfig(projectId, runId);
@@ -373,6 +369,8 @@ export class OrchestrationService implements OnModuleInit {
 
     const runId = await this.getRunId(projectId);
     const config = threadConfig(projectId, runId);
+    const checkpoint = await this.checkpointer.get(config).catch(() => null);
+    const state = checkpoint?.channel_values as Partial<DevFlowStateType> | undefined;
 
     if (!approved) {
       await Promise.all([
@@ -386,8 +384,6 @@ export class OrchestrationService implements OnModuleInit {
       ]);
 
       // Write mistake memory: contract that was rejected at Gate 1
-      const checkpoint = await this.checkpointer.get(config).catch(() => null);
-      const state = checkpoint?.channel_values as Partial<DevFlowStateType> | undefined;
       if (state?.contract) {
         await this.memory.writeMistake({
           agentType: 'contract',
@@ -396,6 +392,7 @@ export class OrchestrationService implements OnModuleInit {
           projectId,
           gateType: 'GATE_1',
           stackKey: state.stackKey ?? 'unknown',
+          approvalSource: 'GATE_1',
         });
       }
 
@@ -413,6 +410,33 @@ export class OrchestrationService implements OnModuleInit {
         notes: notes ?? null,
       },
     });
+
+    if (state?.contract) {
+      await this.memory.writeProjectCoreMemory({
+        projectId,
+        agentType: 'project_core',
+        memoryType: 'PATTERN',
+        sourceType: 'gate_1_approved_contract',
+        approvalSource: 'GATE_1',
+        importance: 1,
+        content: [
+          'APPROVED ARCHITECTURE CONTRACT',
+          `STACK: ${state.stackKey ?? 'unknown'}`,
+          `PROJECT: ${state.contract.projectName}`,
+          `DESCRIPTION: ${state.contract.description}`,
+          `FILES: ${state.contract.fileManifest.join(', ')}`,
+          `ACCEPTANCE: ${state.contract.acceptanceCriteria.join('; ')}`,
+          notes ? `GATE NOTES: ${notes}` : null,
+        ].filter(Boolean).join('\n'),
+        metadata: {
+          stackKey: state.stackKey ?? 'unknown',
+          gateType: 'ARCHITECTURE_REVIEW',
+          projectType: state.contract.requirements.projectType,
+          complexity: state.contract.requirements.complexity,
+          fileCount: state.contract.fileManifest.length,
+        },
+      });
+    }
 
     await this.graph.updateState(config, {
       gate1Approved: true,
@@ -471,12 +495,13 @@ export class OrchestrationService implements OnModuleInit {
               agentType: artifact.agentType,
               rejectedContent: `FILE: ${artifact.filePath}\n\n${artifact.content}`,
               rejectionNotes: notes ?? 'No reason provided',
-              projectId,
-              gateType: 'GATE_2',
-              stackKey: state.stackKey ?? 'unknown',
-            }),
-          ),
-        );
+            projectId,
+            gateType: 'GATE_2',
+            stackKey: state.stackKey ?? 'unknown',
+            approvalSource: 'GATE_2',
+          }),
+        ),
+      );
         this.logger.log(
           `Gate 2 rejected: ${state.artifacts.length} mistake memories written for project ${projectId}`,
         );
@@ -485,6 +510,16 @@ export class OrchestrationService implements OnModuleInit {
       // Notify subscribers: gate rejection leads to FAILED state
       this.gateway?.emitStatusUpdate(projectId, 'FAILED', 'gate_rejected', 'Gate 2 rejected');
       return;
+    }
+
+    if (this.agentProviderMode() === 'llm') {
+      const githubDelivery = this.github.getDeliveryStatus();
+      if (!githubDelivery.available) {
+        throw new Error(
+          githubDelivery.reason ??
+            'GitHub delivery is not configured for Gate 2 repository delivery.',
+        );
+      }
     }
 
     // Gate 2 APPROVED — write SKILL + PATTERN memories
@@ -512,6 +547,8 @@ export class OrchestrationService implements OnModuleInit {
             projectId,
             stackKey,
             projectType,
+            approvalSource: 'GATE_2',
+            sourceType: 'gate_2_approved_artifact',
           }),
         ),
       );
@@ -521,10 +558,36 @@ export class OrchestrationService implements OnModuleInit {
         contract: state.contract,
         projectId,
         stackKey,
+        approvalSource: 'GATE_2',
+        sourceType: 'gate_2_approved_contract_pattern',
+      });
+
+      await this.memory.writeProjectCoreMemory({
+        projectId,
+        agentType: 'project_core',
+        memoryType: 'PATTERN',
+        sourceType: 'gate_2_approved_delivery',
+        approvalSource: 'GATE_2',
+        importance: 1,
+        content: [
+          'APPROVED DELIVERY MEMORY',
+          `STACK: ${stackKey}`,
+          `PROJECT TYPE: ${projectType}`,
+          `ARTIFACTS: ${state.artifacts.map((artifact) => `${artifact.agentType}:${artifact.filePath}`).join(', ')}`,
+          `ACCEPTANCE: ${state.contract.acceptanceCriteria.join('; ')}`,
+          notes ? `GATE NOTES: ${notes}` : null,
+        ].filter(Boolean).join('\n'),
+        metadata: {
+          stackKey,
+          gateType: 'CODE_REVIEW',
+          projectType,
+          artifactCount: state.artifacts.length,
+          artifactFiles: state.artifacts.map((artifact) => artifact.filePath),
+        },
       });
 
       this.logger.log(
-        `Gate 2 approved: ${state.artifacts.length} skill memories + 1 pattern written for project ${projectId}`,
+        `Gate 2 approved: ${state.artifacts.length} skill memories + 1 pattern + project core memory written for project ${projectId}`,
       );
     }
 

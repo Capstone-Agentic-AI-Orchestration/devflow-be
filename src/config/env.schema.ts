@@ -4,7 +4,19 @@ export const envSchema = z.object({
   DATABASE_URL: z.string().url('DATABASE_URL must be a valid URL'),
   SUPABASE_URL: z.string().url('SUPABASE_URL must be a valid URL'),
   AGENT_PROVIDER: z.enum(['mock', 'llm']).optional().default('mock'),
-  LLM_PROVIDER: z.enum(['openrouter', 'openai', 'anthropic', 'opencode']).optional().default('openrouter'),
+  LLM_PROVIDER: z.enum(['openrouter', 'openai', 'anthropic', 'opencode', 'gemini']).optional().default('openrouter'),
+  LLM_REQUEST_TIMEOUT_MS: z
+    .string()
+    .optional()
+    .default('120000')
+    .transform((v) => parseInt(v, 10))
+    .pipe(z.number().positive()),
+  LLM_CONCURRENCY_LIMIT: z
+    .string()
+    .optional()
+    .default('4')
+    .transform((v) => parseInt(v, 10))
+    .pipe(z.number().positive()),
   OPENROUTER_API_KEY: z.string().optional().default(''),
   OPENROUTER_BASE_URL: z.string().url().optional().default('https://openrouter.ai/api/v1'),
   OPENROUTER_MODEL: z.string().optional().default('deepseek/deepseek-v4-flash:free'),
@@ -21,6 +33,10 @@ export const envSchema = z.object({
   OPENCODE_BASE_URL: z.string().url().optional().default('https://opencode.ai/zen/go/v1'),
   OPENCODE_MODEL: z.string().optional().default('deepseek-v4-flash'),
   OPENCODE_FALLBACK_MODEL: z.string().optional().default(''),
+  GEMINI_API_KEY: z.string().optional().default(''),
+  GEMINI_BASE_URL: z.string().url().optional().default('https://generativelanguage.googleapis.com/v1beta/openai'),
+  GEMINI_MODEL: z.string().optional().default('gemini-3.5-flash'),
+  GEMINI_FALLBACK_MODEL: z.string().optional().default(''),
   OPENAI_API_KEY: z.string().optional().default(''),
   GITHUB_APP_ID: z.string().optional().default(''),
   GITHUB_PRIVATE_KEY: z.string().optional().default(''),

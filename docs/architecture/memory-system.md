@@ -4,6 +4,17 @@
 
 The Agent Memory System gives DevFlow a persistent, searchable store of past agent experiences. Each time a project completes (or is rejected), the system extracts structured learnings from the run and stores them as vector-embedded memories. Future runs query this store before each LLM call to inject relevant context — reducing hallucination, improving consistency, and enabling the skip-generation optimization implemented in Phase 2D.
 
+Phase 2F adds layered memory scopes:
+
+| Scope | Who can read it | Write rule |
+|-------|------------------|------------|
+| `PROJECT_CORE` | All agents on the same project | Must be promoted by Gate 1, Gate 2, or explicit human review |
+| `PROJECT_AGENT` | One agent type on one project | Agent-specific project learnings, artifacts, and mistakes |
+| `AGENT_PRIVATE` | One agent type globally | Future global private lessons/templates, without raw project data |
+| `GLOBAL_PATTERN` | All agents when relevant | Approved reusable delivery patterns |
+
+Project core memory is authoritative shared project truth. Agent-private and project-agent memories are advisory.
+
 ---
 
 ## Database Schema
@@ -14,11 +25,14 @@ The Agent Memory System gives DevFlow a persistent, searchable store of past age
 CREATE TABLE agent_memories (
   id          TEXT PRIMARY KEY,
   agentType   TEXT NOT NULL,          -- 'requirements' | 'frontend' | 'backend' | 'database' | 'architecture' | 'contract'
+  scope       AgentMemoryScope NOT NULL DEFAULT 'AGENT_PRIVATE',
   memoryType  AgentMemoryType NOT NULL, -- SKILL | PATTERN | MISTAKE
   content     TEXT NOT NULL,          -- raw text that was embedded
   embedding   vector(1536) NOT NULL,  -- text-embedding-3-small output
   metadata    JSONB DEFAULT '{}',     -- stackKey, projectType, filePath, etc.
   projectId   TEXT,                   -- nullable: global patterns survive project deletion
+  approvedAt  TIMESTAMP,              -- required for PROJECT_CORE reads
+  approvalSource TEXT,                -- GATE_1 | GATE_2 | HUMAN_REVIEW | legacy/system markers
   createdAt   TIMESTAMP DEFAULT NOW()
 );
 
@@ -39,6 +53,29 @@ CREATE INDEX idx_agent_memories_embedding
 | `MISTAKE` | Gate 1 or Gate 2 REJECTED, OR validator failure | Rejected/invalid content + notes |
 
 ---
+
+## Layered Read Order
+
+Each agent invocation now reads memory in separate buckets and injects them as separate prompt sections:
+
+1. `PROJECT_CORE` for the current project, only if human-approved.
+2. `PROJECT_AGENT` for the current agent type and project.
+3. `AGENT_PRIVATE` global memory for the current agent type.
+4. `MISTAKE` memories for the current project/agent or global private agent scope.
+5. `GLOBAL_PATTERN` records with approval metadata.
+
+The separation is deliberate: approved project truth should have higher authority than an agent's private advisory history.
+
+## Human Approval Gate Rule
+
+Shared project memory is written only through `MemoryService.writeProjectCoreMemory()`. That method rejects any approval source other than `GATE_1`, `GATE_2`, or `HUMAN_REVIEW`.
+
+- Gate 1 approval promotes the approved architecture contract into `PROJECT_CORE`.
+- Gate 2 approval promotes the approved delivery summary into `PROJECT_CORE`.
+- Gate rejections write `MISTAKE` memories but do not promote shared truth.
+- Validator failures write advisory `MISTAKE` memories scoped to the implicated agent.
+
+This keeps "what the project believes" behind a human approval gate while still allowing agents to learn private implementation lessons.
 
 ## Embedding Strategy
 

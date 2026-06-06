@@ -49,8 +49,12 @@ export class BackendAgentNode {
         .filter(Boolean)
         .join(' ');
 
-      const memories = await this.memory.readRelevant('backend', memoryQuery);
-      const memoryContext = this.memory.formatAsContext(memories);
+      const memoryBundle = await this.memory.buildContextForAgent({
+        agentType: 'backend',
+        projectId: state.projectId,
+        query: memoryQuery,
+      });
+      const memoryContext = memoryBundle.context;
 
       // ── 2. Build file list ───────────────────────────────────────────────
       const backendFiles = state.contract.fileManifest.filter((f) =>
@@ -77,6 +81,7 @@ export class BackendAgentNode {
         'backend',
         memoryQuery,
         state.stackKey,
+        state.projectId,
       );
 
       if (skipCandidate) {
@@ -156,7 +161,7 @@ Generate complete NestJS code with:
       );
 
       this.logger.log(
-        `[${state.projectId}] Backend agent generated ${artifacts.length} files (${memories.length} memories injected)`,
+        `[${state.projectId}] Backend agent generated ${artifacts.length} files (${memoryBundle.total} layered memories injected)`,
       );
 
       // Log COMPLETED with cost metadata — budget is updated atomically inside.

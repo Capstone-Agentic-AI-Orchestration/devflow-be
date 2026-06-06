@@ -34,6 +34,25 @@ export interface GeneratedArtifact {
   language: string;
 }
 
+export function mergeArtifactsByPath(
+  existing: GeneratedArtifact[],
+  next: GeneratedArtifact[],
+): GeneratedArtifact[] {
+  const order: string[] = [];
+  const artifactsByPath = new Map<string, GeneratedArtifact>();
+
+  for (const artifact of [...existing, ...next]) {
+    if (!artifactsByPath.has(artifact.filePath)) {
+      order.push(artifact.filePath);
+    }
+    artifactsByPath.set(artifact.filePath, artifact);
+  }
+
+  return order
+    .map((filePath) => artifactsByPath.get(filePath))
+    .filter((artifact): artifact is GeneratedArtifact => Boolean(artifact));
+}
+
 // ─── LangGraph State Annotation ───────────────────────────────────────────────
 
 export const DevFlowState = Annotation.Root({
@@ -55,7 +74,7 @@ export const DevFlowState = Annotation.Root({
 
   artifacts: Annotation<GeneratedArtifact[]>({
     default: () => [],
-    reducer: (existing, next) => [...existing, ...next],
+    reducer: mergeArtifactsByPath,
   }),
 
   gate1Approved: Annotation<boolean>({

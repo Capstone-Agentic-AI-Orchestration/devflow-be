@@ -50,6 +50,8 @@ Common optional values:
 ```env
 AGENT_PROVIDER="mock"
 LLM_PROVIDER="openrouter"
+LLM_REQUEST_TIMEOUT_MS=120000
+LLM_CONCURRENCY_LIMIT=4
 OPENROUTER_API_KEY=""
 OPENROUTER_BASE_URL="https://openrouter.ai/api/v1"
 OPENROUTER_MODEL="deepseek/deepseek-v4-flash:free"
@@ -67,6 +69,10 @@ ANTHROPIC_MODEL="claude-3-5-haiku-20241022"
 ANTHROPIC_FALLBACK_MODEL=""
 ANTHROPIC_VERSION="2023-06-01"
 ANTHROPIC_API_KEY=""
+GEMINI_BASE_URL="https://generativelanguage.googleapis.com/v1beta/openai"
+GEMINI_MODEL="gemini-3.5-flash"
+GEMINI_FALLBACK_MODEL=""
+GEMINI_API_KEY=""
 PORT=4000
 NODE_ENV="development"
 CORS_ORIGIN="http://localhost:3000"
@@ -84,13 +90,13 @@ LANGCHAIN_PROJECT="devflow"
 
 `SUPABASE_SERVICE_ROLE_KEY` is server-side only. Never expose it to `devlow-frontend`.
 
-`AGENT_PROVIDER=mock` runs the deterministic local orchestration provider and does not require LLM or GitHub credentials. Use `AGENT_PROVIDER=llm` with `LLM_PROVIDER=openrouter` and `OPENROUTER_API_KEY` to run real LangGraph and work-order artifact generation through OpenRouter. If OpenRouter is throttled, `LLM_PROVIDER=opencode` with `OPENCODE_API_KEY`, `LLM_PROVIDER=openai` with `OPENAI_API_KEY`, or `LLM_PROVIDER=anthropic` with `ANTHROPIC_API_KEY` uses an alternate provider instead. The default OpenRouter model is `deepseek/deepseek-v4-flash:free`; the default OpenCode model is `deepseek-v4-flash`; the default OpenAI model is `gpt-4.1-mini`; the default Anthropic model is `claude-3-5-haiku-20241022`.
+`AGENT_PROVIDER=mock` runs the deterministic local orchestration provider and does not require LLM or GitHub credentials. Use `AGENT_PROVIDER=llm` with `LLM_PROVIDER=openrouter` and `OPENROUTER_API_KEY` to run real LangGraph and work-order artifact generation through OpenRouter. If OpenRouter is throttled, `LLM_PROVIDER=opencode` with `OPENCODE_API_KEY`, `LLM_PROVIDER=openai` with `OPENAI_API_KEY`, `LLM_PROVIDER=anthropic` with `ANTHROPIC_API_KEY`, or `LLM_PROVIDER=gemini` with `GEMINI_API_KEY` uses an alternate provider instead. The default OpenRouter model is `deepseek/deepseek-v4-flash:free`; the default OpenCode model is `deepseek-v4-flash`; the default OpenAI model is `gpt-4.1-mini`; the default Anthropic model is `claude-3-5-haiku-20241022`; the default Gemini model is `gemini-3.5-flash`. `LLM_REQUEST_TIMEOUT_MS` and `LLM_CONCURRENCY_LIMIT` apply across graph and work-order model calls.
 
-The LangGraph path defines DevFlow's own agents: requirements parser, contract negotiator, frontend, backend, database, architecture, validator, and GitHub commit. LangGraph controls ordering, parallel fan-out, retries, and human approval gates. OpenRouter only supplies the model calls inside those custom agents. After Gate 2 approval, the GitHub commit node creates a private repository through the configured GitHub App, commits generated artifacts, injects CI, and stores `repoUrl` on the project.
+The LangGraph path defines DevFlow's own agents: requirements parser, contract negotiator, frontend, backend, database, architecture, validator, and GitHub commit. LangGraph controls ordering, parallel fan-out, retries, and human approval gates. OpenRouter, OpenCode, OpenAI, Anthropic, or Gemini only supply the model calls inside those custom agents. LLM generation can start before GitHub App delivery is configured; after Gate 2 approval, the GitHub commit node requires GitHub readiness, creates a private repository through the configured GitHub App, commits generated artifacts, injects CI, and stores `repoUrl` on the project.
 
 GitHub delivery requires `GITHUB_APP_ID`, a valid PEM `GITHUB_PRIVATE_KEY`, `GITHUB_INSTALLATION_ID`, and `GITHUB_ORG`. `GITHUB_PRIVATE_KEY` can be base64-encoded PEM, raw PEM, or escaped-newline PEM; the app normalizes it before validating it. The orchestration provider endpoint includes `githubDelivery` readiness details so the app can show missing setup before Gate 2 delivery fails. The project orchestration API also exposes non-destructive live checks for the selected graph LLM provider and GitHub App delivery credentials, and the PM project view surfaces both checks before a real LangGraph-to-GitHub run. `npm run smoke:github` performs the same GitHub App installation owner and repository access verification before it allows a real smoke repository create.
 
-`npm run smoke:orchestration-readiness` is non-destructive and verifies the selected graph LLM provider plus GitHub App delivery credentials without creating a project or repository. It exits successfully while reporting blockers by default; set `ORCHESTRATION_READINESS_STRICT=true` when you want CI to fail on incomplete readiness. `npm run smoke:langgraph-github` is safe by default and skips before creating a repository. Set `LANGGRAPH_GITHUB_SMOKE_CREATE=true` only when you intentionally want a real end-to-end smoke repository created through the full LangGraph Gate 1 -> Gate 2 -> GitHub delivery flow. The destructive live smoke preflights OpenRouter, OpenCode, OpenAI, and Anthropic and uses the first configured provider that accepts a real request; set `LANGGRAPH_GITHUB_SMOKE_PROVIDER_AUTO=false` to test only the configured `LLM_PROVIDER`.
+`npm run smoke:orchestration-readiness` is non-destructive and verifies the selected graph LLM provider plus GitHub App delivery credentials without creating a project or repository. It exits successfully while reporting blockers by default; set `ORCHESTRATION_READINESS_STRICT=true` when you want CI to fail on incomplete readiness. `npm run smoke:langgraph-github` is safe by default and skips before creating a repository. Set `LANGGRAPH_GITHUB_SMOKE_CREATE=true` only when you intentionally want a real end-to-end smoke repository created through the full LangGraph Gate 1 -> Gate 2 -> GitHub delivery flow. The destructive live smoke preflights OpenRouter, OpenCode, OpenAI, Anthropic, and Gemini and uses the first configured provider that accepts a real request; set `LANGGRAPH_GITHUB_SMOKE_PROVIDER_AUTO=false` to test only the configured `LLM_PROVIDER`.
 
 ## Scripts
 

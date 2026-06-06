@@ -49,8 +49,12 @@ export class DatabaseAgentNode {
         .filter(Boolean)
         .join(' ');
 
-      const memories = await this.memory.readRelevant('database', memoryQuery);
-      const memoryContext = this.memory.formatAsContext(memories);
+      const memoryBundle = await this.memory.buildContextForAgent({
+        agentType: 'database',
+        projectId: state.projectId,
+        query: memoryQuery,
+      });
+      const memoryContext = memoryBundle.context;
 
       // ── 2. Build file list ───────────────────────────────────────────────
       const dbFiles = state.contract.fileManifest.filter((f) =>
@@ -72,6 +76,7 @@ export class DatabaseAgentNode {
         'database',
         memoryQuery,
         state.stackKey,
+        state.projectId,
       );
 
       if (skipCandidate) {
@@ -150,7 +155,7 @@ Requirements:
       );
 
       this.logger.log(
-        `[${state.projectId}] Database agent generated ${artifacts.length} files (${memories.length} memories injected)`,
+        `[${state.projectId}] Database agent generated ${artifacts.length} files (${memoryBundle.total} layered memories injected)`,
       );
 
       // Log COMPLETED with cost metadata — budget is updated atomically inside.

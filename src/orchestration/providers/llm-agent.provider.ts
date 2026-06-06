@@ -1,5 +1,6 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Optional } from '@nestjs/common';
 import { Prisma, WorkOrderAgentType } from '@prisma/client';
+import { MemoryService } from '../../memory/memory.service';
 import {
   GeneratedWorkOrderOutput,
   WorkOrderAgentContext,
@@ -9,6 +10,11 @@ import {
   agentArtifactContractFor,
   ORCHESTRATION_CONTRACT_VERSION,
 } from './agent-contracts';
+import {
+  selectedLlmProvider,
+  withLlmRequest,
+  type LlmProviderName,
+} from './llm-runtime';
 
 interface OpenRouterChatMessage {
   role: 'system' | 'user';
@@ -25,6 +31,10 @@ interface OpenRouterChatResponse {
     message?: string;
     code?: string | number;
   };
+  usage?: {
+    prompt_tokens?: number;
+    completion_tokens?: number;
+  };
 }
 
 interface AnthropicMessageResponse {
@@ -35,18 +45,20 @@ interface AnthropicMessageResponse {
   error?: {
     message?: string;
   };
+  usage?: {
+    input_tokens?: number;
+    output_tokens?: number;
+  };
 }
-
-type LlmProviderName = 'openrouter' | 'openai' | 'anthropic' | 'opencode';
 
 @Injectable()
 export class LlmAgentProvider implements WorkOrderAgentProvider {
   readonly mode = 'llm' as const;
 
+  constructor(@Optional() private readonly memory?: MemoryService) {}
+
   providerName(): LlmProviderName {
-    if (process.env.LLM_PROVIDER === 'anthropic') return 'anthropic';
-    if (process.env.LLM_PROVIDER === 'opencode') return 'opencode';
-    return process.env.LLM_PROVIDER === 'openai' ? 'openai' : 'openrouter';
+    return selectedLlmProvider();
   }
 
   model(): string {
@@ -60,6 +72,10 @@ export class LlmAgentProvider implements WorkOrderAgentProvider {
 
     if (this.providerName() === 'opencode') {
       return process.env.OPENCODE_MODEL || 'deepseek-v4-flash';
+    }
+
+    if (this.providerName() === 'gemini') {
+      return process.env.GEMINI_MODEL || 'gemini-3.5-flash';
     }
 
     return process.env.OPENROUTER_MODEL || 'deepseek/deepseek-v4-flash:free';
@@ -78,6 +94,10 @@ export class LlmAgentProvider implements WorkOrderAgentProvider {
       return process.env.OPENCODE_FALLBACK_MODEL?.trim() || null;
     }
 
+    if (this.providerName() === 'gemini') {
+      return process.env.GEMINI_FALLBACK_MODEL?.trim() || null;
+    }
+
     return process.env.OPENROUTER_FALLBACK_MODEL?.trim() || null;
   }
 
@@ -92,6 +112,10 @@ export class LlmAgentProvider implements WorkOrderAgentProvider {
 
     if (this.providerName() === 'opencode') {
       return (process.env.OPENCODE_BASE_URL || 'https://opencode.ai/zen/go/v1').replace(/\/$/, '');
+    }
+
+    if (this.providerName() === 'gemini') {
+      return (process.env.GEMINI_BASE_URL || 'https://generativelanguage.googleapis.com/v1beta/openai').replace(/\/$/, '');
     }
 
     return (process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1').replace(/\/$/, '');
@@ -114,6 +138,12 @@ export class LlmAgentProvider implements WorkOrderAgentProvider {
       return process.env.OPENCODE_API_KEY?.trim()
         ? []
         : ['OPENCODE_API_KEY'];
+    }
+
+    if (this.providerName() === 'gemini') {
+      return process.env.GEMINI_API_KEY?.trim()
+        ? []
+        : ['GEMINI_API_KEY'];
     }
 
     return process.env.OPENROUTER_API_KEY?.trim()
@@ -160,11 +190,13 @@ export class LlmAgentProvider implements WorkOrderAgentProvider {
     context: WorkOrderAgentContext,
     primaryError?: unknown,
   ): Promise<GeneratedWorkOrderOutput> {
-    const response = await fetch(this.url(), {
+    const memoryContext = await this.workOrderMemoryContext(context);
+    const response = await withLlmRequest((signal) => fetch(this.url(), {
       method: 'POST',
       headers: this.headers(),
-      body: JSON.stringify(this.requestBody(model, this.messagesFor(context), 0.2, 'work_order_output')),
-    });
+      signal,
+      body: JSON.stringify(this.requestBody(model, this.messagesFor(context, memoryContext), 0.2, 'work_order_output')),
+    }));
 
     const payload = await response.json().catch(() => null) as OpenRouterChatResponse | AnthropicMessageResponse | null;
     if (!response.ok) {
@@ -181,6 +213,7 @@ export class LlmAgentProvider implements WorkOrderAgentProvider {
     }
 
     const output = await this.parseOutputOrRepair(content, model, context);
+    const usage = this.usageFromPayload(payload);
     return {
       ...output,
       metadata: {
@@ -190,6 +223,7 @@ export class LlmAgentProvider implements WorkOrderAgentProvider {
         model,
         contractVersion: ORCHESTRATION_CONTRACT_VERSION,
         agentType: context.workOrder.agentType,
+        usage,
       },
     };
   }
@@ -213,9 +247,10 @@ export class LlmAgentProvider implements WorkOrderAgentProvider {
     originalError: unknown,
   ): Promise<GeneratedWorkOrderOutput> {
     const contract = agentArtifactContractFor(context.workOrder.agentType);
-    const response = await fetch(this.url(), {
+    const response = await withLlmRequest((signal) => fetch(this.url(), {
       method: 'POST',
       headers: this.headers(),
+      signal,
       body: JSON.stringify(this.requestBody(model, [
           {
             role: 'system',
@@ -245,7 +280,7 @@ export class LlmAgentProvider implements WorkOrderAgentProvider {
             }),
           },
         ], 0, 'work_order_repair')),
-    });
+    }));
 
     const payload = await response.json().catch(() => null) as OpenRouterChatResponse | AnthropicMessageResponse | null;
     if (!response.ok) {
@@ -278,6 +313,10 @@ export class LlmAgentProvider implements WorkOrderAgentProvider {
 
     if (this.providerName() === 'opencode') {
       return process.env.OPENCODE_API_KEY?.trim() ?? '';
+    }
+
+    if (this.providerName() === 'gemini') {
+      return process.env.GEMINI_API_KEY?.trim() ?? '';
     }
 
     return this.providerName() === 'openai'
@@ -345,7 +384,11 @@ export class LlmAgentProvider implements WorkOrderAgentProvider {
   }
 
   private responseFormat(name: string): Record<string, unknown> {
-    if (this.providerName() === 'openai' || this.providerName() === 'opencode') {
+    if (
+      this.providerName() === 'openai' ||
+      this.providerName() === 'opencode' ||
+      this.providerName() === 'gemini'
+    ) {
       return {
         type: 'json_schema',
         json_schema: {
@@ -365,6 +408,7 @@ export class LlmAgentProvider implements WorkOrderAgentProvider {
   private providerLabel(): string {
     if (this.providerName() === 'anthropic') return 'Anthropic';
     if (this.providerName() === 'opencode') return 'OpenCode';
+    if (this.providerName() === 'gemini') return 'Gemini';
     return this.providerName() === 'openai' ? 'OpenAI' : 'OpenRouter';
   }
 
@@ -377,7 +421,51 @@ export class LlmAgentProvider implements WorkOrderAgentProvider {
     return null;
   }
 
-  private messagesFor(context: WorkOrderAgentContext): OpenRouterChatMessage[] {
+  private usageFromPayload(payload: OpenRouterChatResponse | AnthropicMessageResponse | null) {
+    if (!payload?.usage) return { inputTokens: 0, outputTokens: 0 };
+    if ('prompt_tokens' in payload.usage || 'completion_tokens' in payload.usage) {
+      const usage = payload.usage as OpenRouterChatResponse['usage'];
+      return {
+        inputTokens: usage?.prompt_tokens ?? 0,
+        outputTokens: usage?.completion_tokens ?? 0,
+      };
+    }
+
+    const usage = payload.usage as AnthropicMessageResponse['usage'];
+    return {
+      inputTokens: usage?.input_tokens ?? 0,
+      outputTokens: usage?.output_tokens ?? 0,
+    };
+  }
+
+  private async workOrderMemoryContext(context: WorkOrderAgentContext): Promise<string> {
+    if (!this.memory) return '';
+
+    const query = [
+      context.project.companyName,
+      context.project.stackKey,
+      context.project.brief,
+      context.workOrder.title,
+      context.workOrder.instructions,
+      context.task?.title,
+      context.task?.description,
+      context.sourceArtifact?.filePath,
+      context.sourceArtifact?.displayName,
+    ]
+      .filter(Boolean)
+      .join(' ');
+
+    const bundle = await this.memory.buildContextForAgent({
+      agentType: context.workOrder.agentType.toLowerCase(),
+      projectId: context.project.id,
+      query,
+      topK: 2,
+    });
+
+    return bundle.context;
+  }
+
+  private messagesFor(context: WorkOrderAgentContext, memoryContext = ''): OpenRouterChatMessage[] {
     const contract = agentArtifactContractFor(context.workOrder.agentType);
     return [
       {
@@ -395,7 +483,8 @@ export class LlmAgentProvider implements WorkOrderAgentProvider {
             .map((signal) => signal.anyOf.map((value) => `"${value}"`).join(' or '))
             .join('; ')}.`,
           this.agentInstruction(context.workOrder.agentType),
-        ].join('\n'),
+          memoryContext ? `Relevant layered memory:\n${memoryContext}` : null,
+        ].filter(Boolean).join('\n'),
       },
       {
         role: 'user',
@@ -450,11 +539,11 @@ export class LlmAgentProvider implements WorkOrderAgentProvider {
     try {
       parsed = JSON.parse(jsonText);
     } catch (error) {
-      throw new Error(`OpenRouter ${model} returned invalid JSON: ${this.errorMessage(error)}`);
+      throw new Error(`${this.providerLabel()} ${model} returned invalid JSON: ${this.errorMessage(error)}`);
     }
 
     if (!parsed || typeof parsed !== 'object') {
-      throw new Error(`OpenRouter ${model} response must be a JSON object.`);
+      throw new Error(`${this.providerLabel()} ${model} response must be a JSON object.`);
     }
 
     const record = this.outputRecordFrom(parsed);
@@ -467,7 +556,7 @@ export class LlmAgentProvider implements WorkOrderAgentProvider {
 
     if (!filePath || !displayName || !language || !generatedContent) {
       throw new Error(
-        `OpenRouter ${model} response must include string filePath, displayName, language, and content fields.`,
+        `${this.providerLabel()} ${model} response must include string filePath, displayName, language, and content fields.`,
       );
     }
 
@@ -486,7 +575,7 @@ export class LlmAgentProvider implements WorkOrderAgentProvider {
 
   private outputRecordFrom(value: unknown): Record<string, unknown> {
     if (!value || typeof value !== 'object' || Array.isArray(value)) {
-      throw new Error('OpenRouter response must be a JSON object.');
+      throw new Error(`${this.providerLabel()} response must be a JSON object.`);
     }
 
     const record = value as Record<string, unknown>;

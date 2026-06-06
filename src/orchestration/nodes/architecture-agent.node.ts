@@ -48,8 +48,12 @@ export class ArchitectureAgentNode {
         .filter(Boolean)
         .join(' ');
 
-      const memories = await this.memory.readRelevant('architecture', memoryQuery);
-      const memoryContext = this.memory.formatAsContext(memories);
+      const memoryBundle = await this.memory.buildContextForAgent({
+        agentType: 'architecture',
+        projectId: state.projectId,
+        query: memoryQuery,
+      });
+      const memoryContext = memoryBundle.context;
       const docFiles = ['ARCHITECTURE.md', 'API.md', 'DEPLOYMENT.md'];
 
       // ── 2. Skip-generation check ───────────────────────────────────────────
@@ -59,6 +63,7 @@ export class ArchitectureAgentNode {
         'architecture',
         memoryQuery,
         state.stackKey,
+        state.projectId,
       );
 
       if (skipCandidate) {
@@ -157,7 +162,7 @@ Generate these 3 documentation files:
       );
 
       this.logger.log(
-        `[${state.projectId}] Architecture agent generated ${artifacts.length} docs (${memories.length} memories injected)`,
+        `[${state.projectId}] Architecture agent generated ${artifacts.length} docs (${memoryBundle.total} layered memories injected)`,
       );
 
       // Log COMPLETED — model field drives cost attribution in RunSupervisorService.

@@ -5,7 +5,7 @@ import { FrontendAgentNode } from '../src/orchestration/nodes/frontend-agent.nod
 import { GithubCommitNode } from '../src/orchestration/nodes/github-commit.node';
 import { RequirementsParserNode } from '../src/orchestration/nodes/requirements-parser.node';
 import { GraphLlmProvider } from '../src/orchestration/providers/graph-llm.provider';
-import { DevFlowStateType } from '../src/orchestration/graph/devflow.state';
+import { DevFlowStateType, mergeArtifactsByPath } from '../src/orchestration/graph/devflow.state';
 
 describe('GraphLlmProvider', () => {
   const originalEnv = { ...process.env };
@@ -100,6 +100,59 @@ describe('GraphLlmProvider', () => {
       usage: { inputTokens: 11, outputTokens: 22 },
     });
     expect(fetchMock.mock.calls[0][0]).toBe('https://api.openai.com/v1/chat/completions');
+    expect(fetchMock.mock.calls[0][1].signal).toBeInstanceOf(AbortSignal);
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(body.response_format).toEqual(expect.objectContaining({
+      type: 'json_schema',
+      json_schema: expect.objectContaining({
+        schema: expect.objectContaining({ type: 'array' }),
+      }),
+    }));
+  });
+
+  it('parses Gemini JSON arrays through the OpenAI-compatible path', async () => {
+    process.env.LLM_PROVIDER = 'gemini';
+    process.env.GEMINI_API_KEY = 'test-gemini-key';
+    process.env.GEMINI_MODEL = 'gemini-test-model';
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({
+        choices: [
+          {
+            message: {
+              content: JSON.stringify([
+                {
+                  filePath: 'src/app/page.tsx',
+                  content: 'export default function Page() { return <div>Gemini</div>; }',
+                  language: 'tsx',
+                },
+              ]),
+            },
+          },
+        ],
+        usage: {
+          prompt_tokens: 19,
+          completion_tokens: 31,
+        },
+      }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await new GraphLlmProvider().generateJson<Array<{ filePath: string }>>({
+      agentName: 'frontend_agent',
+      systemPrompt: 'Generate files.',
+      userPrompt: 'Generate one file.',
+      expectedShape: 'array',
+    });
+
+    expect(result).toEqual({
+      value: [{ filePath: 'src/app/page.tsx', content: 'export default function Page() { return <div>Gemini</div>; }', language: 'tsx' }],
+      model: 'gemini-test-model',
+      usage: { inputTokens: 19, outputTokens: 31 },
+    });
+    expect(fetchMock.mock.calls[0][0]).toBe('https://generativelanguage.googleapis.com/v1beta/openai/chat/completions');
+    expect(fetchMock.mock.calls[0][1].headers.Authorization).toBe('Bearer test-gemini-key');
+    expect(fetchMock.mock.calls[0][1].signal).toBeInstanceOf(AbortSignal);
     const body = JSON.parse(fetchMock.mock.calls[0][1].body);
     expect(body.response_format).toEqual(expect.objectContaining({
       type: 'json_schema',
@@ -284,6 +337,48 @@ describe('GraphLlmProvider', () => {
   });
 });
 
+describe('DevFlowState artifact reducer', () => {
+  it('replaces retried artifacts by file path while preserving file order', () => {
+    const result = mergeArtifactsByPath(
+      [
+        {
+          agentType: 'frontend',
+          filePath: 'src/app/page.tsx',
+          content: 'old frontend',
+          language: 'tsx',
+        },
+        {
+          agentType: 'backend',
+          filePath: 'src/app/api/route.ts',
+          content: 'backend',
+          language: 'typescript',
+        },
+      ],
+      [
+        {
+          agentType: 'frontend',
+          filePath: 'src/app/page.tsx',
+          content: 'fixed frontend',
+          language: 'tsx',
+        },
+        {
+          agentType: 'architecture',
+          filePath: 'README.md',
+          content: '# Docs',
+          language: 'markdown',
+        },
+      ],
+    );
+
+    expect(result.map((artifact) => artifact.filePath)).toEqual([
+      'src/app/page.tsx',
+      'src/app/api/route.ts',
+      'README.md',
+    ]);
+    expect(result[0].content).toBe('fixed frontend');
+  });
+});
+
 describe('LangGraph GitHub delivery node', () => {
   it('creates a repository, commits generated artifacts, injects CI, and persists repoUrl', async () => {
     const github = {
@@ -415,8 +510,7 @@ describe('LangGraph OpenRouter-backed agents', () => {
       }),
     };
     const memory = {
-      readRelevant: vi.fn().mockResolvedValue([]),
-      formatAsContext: vi.fn().mockReturnValue(''),
+      buildContextForAgent: vi.fn().mockResolvedValue({ context: '', total: 0 }),
       findSkipCandidate: vi.fn().mockResolvedValue(null),
     };
     const eventLog = {

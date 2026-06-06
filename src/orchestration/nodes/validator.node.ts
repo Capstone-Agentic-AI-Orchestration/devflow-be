@@ -72,6 +72,8 @@ export class ValidatorNode {
             projectId: state.projectId,
             gateType: 'GATE_2',
             stackKey,
+            sourceType: 'validator_failure',
+            approvalSource: 'VALIDATOR',
           }),
         ),
       );
