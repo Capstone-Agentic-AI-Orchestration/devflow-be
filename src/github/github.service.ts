@@ -4,6 +4,7 @@ import { Octokit } from '@octokit/rest';
 import { createAppAuth } from '@octokit/auth-app';
 import { createPrivateKey } from 'node:crypto';
 import { GitHubArtifact } from './github.types';
+import { scaffoldFilesForStack } from './repo-scaffold';
 
 export interface GithubDeliveryStatus {
   configured: boolean;
@@ -24,29 +25,6 @@ export interface GithubDeliveryVerification {
   reason: string | null;
 }
 
-const CI_WORKFLOW_CONTENT = `name: CI
-
-on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
-
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-      - name: Install dependencies
-        run: npm ci
-      - name: Build
-        run: npm run build --if-present
-      - name: Test
-        run: npm test --if-present
-`;
 
 @Injectable()
 export class GithubService implements OnModuleInit {
@@ -278,16 +256,19 @@ export class GithubService implements OnModuleInit {
     this.logger.log(`Committed ${artifacts.length} files to ${repoName}`);
   }
 
-  async injectCiWorkflow(repoName: string): Promise<void> {
+  async injectRepoScaffold(
+    repoName: string,
+    stackKey: string,
+    projectName: string,
+  ): Promise<void> {
+    const files = scaffoldFilesForStack(stackKey, projectName);
+    this.logger.log(
+      `Injecting ${files.length} scaffold files for stack "${stackKey}" into ${repoName}`,
+    );
     await this.commitFiles(
       repoName,
-      [
-        {
-          filePath: '.github/workflows/ci.yml',
-          content: CI_WORKFLOW_CONTENT,
-        },
-      ],
-      'ci: add GitHub Actions workflow',
+      files,
+      'scaffold: add stack-aware project structure',
     );
   }
 

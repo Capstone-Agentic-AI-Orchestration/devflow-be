@@ -48,9 +48,9 @@ export class GithubCommitNode {
         `[${state.projectId}] Committed ${state.artifacts.length} files`,
       );
 
-      // 3. Inject CI workflow
-      await this.github.injectCiWorkflow(repoName);
-      this.logger.log(`[${state.projectId}] CI workflow injected`);
+      // 3. Inject stack-aware scaffold files
+      await this.github.injectRepoScaffold(repoName, state.stackKey, state.companyName);
+      this.logger.log(`[${state.projectId}] Stack scaffold injected (${state.stackKey})`);
 
       // 4. Persist artifacts to DB
       if (state.artifacts.length > 0) {
