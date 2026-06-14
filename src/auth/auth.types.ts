@@ -1,4 +1,4 @@
-import { UserRole } from '@prisma/client';
+import { ProfileStatus, UserRole } from '@prisma/client';
 import { Request } from 'express';
 
 export interface AuthUser {
@@ -6,6 +6,7 @@ export interface AuthUser {
   email: string | null;
   fullName: string | null;
   role: UserRole;
+  status?: ProfileStatus;
 }
 
 export interface AuthenticatedRequest extends Request {

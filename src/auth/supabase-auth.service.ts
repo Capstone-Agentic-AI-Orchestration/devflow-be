@@ -1,7 +1,7 @@
 import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { createRemoteJWKSet, jwtVerify, JWTPayload } from 'jose';
-import { ClientInviteStatus, UserRole } from '@prisma/client';
+import { ClientInviteStatus, ProfileStatus, UserRole } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuthUser } from './auth.types';
 
@@ -64,8 +64,13 @@ export class SupabaseAuthService {
         email: true,
         fullName: true,
         role: true,
+        status: true,
       },
     });
+
+    if (profile.status === ProfileStatus.SUSPENDED) {
+      throw new UnauthorizedException('This account has been suspended');
+    }
 
     await this.acceptPendingClientInvites(profile);
 

@@ -36,6 +36,7 @@ model Project {
   deliveryReview ProjectDeliveryReview?
   orchestrationRuns OrchestrationRun[]
   workOrderExecutions WorkOrderExecution[]
+  scheduleEvents ScheduleEvent[]
 
   @@index([createdById])
 }
@@ -239,6 +240,31 @@ enum UserRole {
   ADMIN
 }
 
+enum ProfileStatus {
+  ACTIVE
+  SUSPENDED
+}
+
+enum ScheduleEventType {
+  MILESTONE
+  MEETING
+  DUE_DATE
+  REMINDER
+  OTHER
+}
+
+enum ScheduleVisibility {
+  PRIVATE
+  TEAM
+  CLIENT
+}
+
+enum DeveloperAvailabilityStatus {
+  AVAILABLE
+  LIMITED
+  UNAVAILABLE
+}
+
 enum ProjectTaskStatus {
   TODO
   IN_PROGRESS
@@ -251,6 +277,8 @@ model Profile {
   email           String?         @unique
   fullName        String?
   role            UserRole        @default(CLIENT)
+  status          ProfileStatus   @default(ACTIVE)
+  preferences     Json            @default("{}")
   createdAt       DateTime        @default(now())
   updatedAt       DateTime        @updatedAt
   createdProjects Project[]       @relation("ProjectCreatedBy")
@@ -275,8 +303,46 @@ model Profile {
   acceptedDeliveries ProjectDeliveryReview[] @relation("DeliveryAcceptor")
   requestedDeliveryRevisions ProjectDeliveryReview[] @relation("DeliveryRevisionRequester")
   resolvedDeliveryRevisions ProjectDeliveryReview[] @relation("DeliveryRevisionResolver")
+  adminAuditLogs   AdminAuditLog[] @relation("AdminAuditActor")
+  scheduleEvents   ScheduleEvent[] @relation("ScheduleOwner")
+  developerProfile DeveloperProfile?
 
   @@map("profiles")
+}
+
+model ScheduleEvent {
+  id          String             @id @default(cuid())
+  title       String
+  description String?            @db.Text
+  startsAt    DateTime
+  endsAt      DateTime?
+  type        ScheduleEventType  @default(MEETING)
+  visibility  ScheduleVisibility @default(TEAM)
+  projectId   String?
+  project     Project?           @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  ownerId     String             @db.Uuid
+  owner       Profile            @relation("ScheduleOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+
+  @@index([ownerId, startsAt])
+  @@index([projectId, startsAt])
+  @@index([visibility, startsAt])
+  @@map("schedule_events")
+}
+
+model DeveloperProfile {
+  userId              String                      @id @db.Uuid
+  user                Profile                     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  skills              Json                        @default("[]")
+  weeklyCapacityHours Int                         @default(40)
+  availabilityStatus  DeveloperAvailabilityStatus @default(AVAILABLE)
+  notes               String?                     @db.Text
+  createdAt           DateTime                    @default(now())
+  updatedAt           DateTime                    @updatedAt
+
+  @@index([availabilityStatus])
+  @@map("developer_profiles")
 }
 
 model ProjectMember {
@@ -825,4 +891,57 @@ model RunBudget {
   updatedAt      DateTime @updatedAt
 
   @@map("run_budgets")
+}
+
+enum AdminDomainStatus {
+  PLANNED
+  PENDING_VERIFICATION
+  VERIFIED
+  FAILED
+  DISABLED
+}
+
+model AdminDomain {
+  id          String            @id @default(cuid())
+  name        String            @unique
+  type        String
+  owner       String?
+  target      String?
+  environment String            @default("production")
+  status      AdminDomainStatus @default(PLANNED)
+  verifiedAt  DateTime?
+  createdById String?           @db.Uuid
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+
+  @@index([status])
+  @@index([environment])
+  @@map("admin_domains")
+}
+
+model AdminAuditLog {
+  id        String   @id @default(cuid())
+  actorId   String?  @db.Uuid
+  actor     Profile? @relation("AdminAuditActor", fields: [actorId], references: [id], onDelete: SetNull)
+  action    String
+  targetType String
+  targetId  String?
+  summary   String
+  metadata  Json     @default("{}")
+  createdAt DateTime @default(now())
+
+  @@index([actorId, createdAt])
+  @@index([targetType, targetId])
+  @@index([action, createdAt])
+  @@map("admin_audit_logs")
+}
+
+model PlatformSetting {
+  key         String   @id
+  value       Json     @default("{}")
+  updatedById String?  @db.Uuid
+  updatedAt   DateTime @updatedAt
+  createdAt   DateTime @default(now())
+
+  @@map("platform_settings")
 }

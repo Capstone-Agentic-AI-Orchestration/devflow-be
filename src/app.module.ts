@@ -16,6 +16,11 @@ import { NotificationsModule } from './notifications/notifications.module';
 import { CollaborationModule } from './collaboration/collaboration.module';
 import { InquiriesModule } from './inquiries/inquiries.module';
 import { ClientInvitesModule } from './client-invites/client-invites.module';
+import { AuthModule } from './auth/auth.module';
+import { AdminModule } from './admin/admin.module';
+import { ScheduleModule as DevFlowScheduleModule } from './schedule/schedule.module';
+import { ReportsModule } from './reports/reports.module';
+import { DevelopersModule } from './developers/developers.module';
 
 @Module({
   imports: [
@@ -28,6 +33,7 @@ import { ClientInvitesModule } from './client-invites/client-invites.module';
     // @Cron decorators in child modules (SupervisorModule) are picked up.
     ScheduleModule.forRoot(),
     PrismaModule,
+    AuthModule,
     GithubModule,
     // Phase 2E — WebSocket gateway (must be before OrchestrationModule so
     // GatewayModule is available for injection into OrchestrationService)
@@ -40,6 +46,10 @@ import { ClientInvitesModule } from './client-invites/client-invites.module';
     CollaborationModule,
     InquiriesModule,
     ClientInvitesModule,
+    AdminModule,
+    DevFlowScheduleModule,
+    ReportsModule,
+    DevelopersModule,
   ],
   providers: [
     {

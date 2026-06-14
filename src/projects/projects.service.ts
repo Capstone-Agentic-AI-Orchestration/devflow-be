@@ -1006,6 +1006,36 @@ export class ProjectsService {
     return artifact;
   }
 
+  async downloadArtifact(
+    id: string,
+    artifactId: string,
+    user: AuthUser,
+  ): Promise<{ fileName: string; content: string; contentType: string }> {
+    await this.assertAccessible(id, user);
+    const artifact = await this.prisma.artifact.findFirst({
+      where: {
+        id: artifactId,
+        projectId: id,
+        ...(user.role === UserRole.CLIENT ? { clientVisible: true } : {}),
+      },
+      select: {
+        filePath: true,
+        displayName: true,
+        content: true,
+      },
+    });
+
+    if (!artifact) {
+      throw new NotFoundException(`Artifact ${artifactId} not found`);
+    }
+
+    return {
+      fileName: this.safeDownloadName(artifact.displayName || artifact.filePath),
+      content: artifact.content,
+      contentType: this.contentTypeFor(artifact.filePath),
+    };
+  }
+
   async updateArtifactSharing(
     id: string,
     artifactId: string,
@@ -2813,6 +2843,21 @@ export class ProjectsService {
     if (!this.canManageProjects(user.role)) {
       throw new BadRequestException('Only PM or ADMIN users can manage this resource');
     }
+  }
+
+  private safeDownloadName(name: string): string {
+    const fallback = 'artifact.txt';
+    const base = name.split(/[\\/]/).pop()?.trim() || fallback;
+    return base.replace(/[^a-zA-Z0-9._-]/g, '_') || fallback;
+  }
+
+  private contentTypeFor(filePath: string): string {
+    if (filePath.endsWith('.json')) return 'application/json; charset=utf-8';
+    if (filePath.endsWith('.html')) return 'text/html; charset=utf-8';
+    if (filePath.endsWith('.css')) return 'text/css; charset=utf-8';
+    if (filePath.endsWith('.js') || filePath.endsWith('.ts') || filePath.endsWith('.tsx')) return 'text/plain; charset=utf-8';
+    if (filePath.endsWith('.md')) return 'text/markdown; charset=utf-8';
+    return 'text/plain; charset=utf-8';
   }
 
   private assertRoleCompatible(profileRole: UserRole, projectRole: UserRole): void {

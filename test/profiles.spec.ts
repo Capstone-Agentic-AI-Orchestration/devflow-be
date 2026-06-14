@@ -7,6 +7,8 @@ function makePrismaMock() {
   return {
     profile: {
       findMany: vi.fn().mockResolvedValue([]),
+      findUniqueOrThrow: vi.fn(),
+      update: vi.fn(),
     },
   };
 }
@@ -67,6 +69,50 @@ describe('ProfilesService', () => {
         { email: 'asc' },
       ],
       take: 20,
+    });
+  });
+
+  it('me returns the current backend profile', async () => {
+    prisma.profile.findUniqueOrThrow.mockResolvedValue({ id: 'user-1' });
+
+    await service.me({
+      id: 'user-1',
+      email: 'user@example.com',
+      fullName: 'User One',
+      role: UserRole.CLIENT,
+    });
+
+    expect(prisma.profile.findUniqueOrThrow).toHaveBeenCalledWith({
+      where: { id: 'user-1' },
+      select: expect.objectContaining({
+        id: true,
+        email: true,
+        fullName: true,
+        preferences: true,
+      }),
+    });
+  });
+
+  it('updateMe trims fullName and stores preferences', async () => {
+    prisma.profile.update.mockResolvedValue({ id: 'user-1' });
+
+    await service.updateMe(
+      {
+        id: 'user-1',
+        email: 'user@example.com',
+        fullName: 'User One',
+        role: UserRole.CLIENT,
+      },
+      { fullName: ' Updated User ', preferences: { email: true } },
+    );
+
+    expect(prisma.profile.update).toHaveBeenCalledWith({
+      where: { id: 'user-1' },
+      data: {
+        fullName: 'Updated User',
+        preferences: { email: true },
+      },
+      select: expect.any(Object),
     });
   });
 });

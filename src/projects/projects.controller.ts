@@ -8,10 +8,12 @@ import {
   Param,
   Patch,
   Post,
+  Res,
   UseGuards,
   UsePipes,
   ValidationPipe,
 } from '@nestjs/common';
+import type { Response } from 'express';
 import { UserRole } from '@prisma/client';
 import { ProjectsService } from './projects.service';
 import { CreateProjectDto } from './dto/create-project.dto';
@@ -104,6 +106,20 @@ export class ProjectsController {
     @CurrentUser() user: AuthUser,
   ) {
     return this.projectsService.findArtifact(id, artifactId, user);
+  }
+
+  @Get(':id/artifacts/:artifactId/download')
+  @Roles(UserRole.CLIENT, UserRole.PM, UserRole.DEV, UserRole.ADMIN)
+  async downloadArtifact(
+    @Param('id') id: string,
+    @Param('artifactId') artifactId: string,
+    @CurrentUser() user: AuthUser,
+    @Res() response: Response,
+  ) {
+    const artifact = await this.projectsService.downloadArtifact(id, artifactId, user);
+    response.setHeader('Content-Type', artifact.contentType);
+    response.setHeader('Content-Disposition', `attachment; filename="${artifact.fileName}"`);
+    response.send(artifact.content);
   }
 
   @Patch(':id/artifacts/:artifactId/share')
